@@ -171,3 +171,25 @@ describe("tenant isolation", () => {
     expect(everything).not.toContain("VICTIM-SECRET-TOKEN");
   });
 });
+
+describe("streaming", () => {
+  it("streams agent work and the final synthesis, but not internal plan/review/judge JSON", async () => {
+    const { bus } = await import("@/server/orchestrator/events");
+    const user = await makeUser(d);
+    await connectSandbox(user.id, ["openai", "anthropic", "google"]);
+    const task = await createTask(user.id, "Assess the plan", null);
+    const byRun = new Map<string, string>();
+    const off = bus.subscribe(task.id, (e) => {
+      if (e.type === "delta") byRun.set(e.agentRunId, (byRun.get(e.agentRunId) ?? "") + e.text);
+    });
+    const roster = await buildRoster(user.id, { task: "Assess the plan", maxAgents: 5 });
+    const runId = await startRun({ userId: user.id, taskId: task.id, prompt: "Assess the plan", roster, limits: DEFAULT_LIMITS, options: {} });
+    await awaitRun(runId);
+    off();
+    const ars = await d.select().from(agentRuns).where(eq(agentRuns.taskRunId, runId));
+    const streamedKinds = new Set(ars.filter((a) => byRun.has(a.id)).map((a) => a.kind));
+    expect(streamedKinds).toEqual(new Set(["work", "synthesis"]));
+    const synth = ars.find((a) => a.kind === "synthesis")!;
+    expect(byRun.get(synth.id)).toBe(synth.output);
+  });
+});

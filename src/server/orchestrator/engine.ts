@@ -481,7 +481,8 @@ export class Orchestrator {
       if (!this.budget.canSynthesize()) break;
       const res = await this.callAgent(agent, "synthesis", "Final synthesis", "Combine the team's work into one answer.", prompt, {
         replyToIds: inputs,
-        silentOutput: true,
+        // The final answer streams to the user token by token.
+        silentOutput: false,
         ignoreRuntime: true,
       });
       if (!res) continue;
