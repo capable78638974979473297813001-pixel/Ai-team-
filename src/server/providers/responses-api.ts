@@ -1,6 +1,19 @@
 import { parseSSE, providerFetch, toProviderError, withTimeout } from "./http";
 import { ProviderError, type ProviderConversation, type SendOptions, type StreamChunk } from "./types";
 
+/** The subset of Responses API stream events we consume. */
+type ResponsesEvent = {
+  type?: string;
+  delta?: unknown;
+  message?: string;
+  error?: { message?: string };
+  response?: {
+    model?: string;
+    usage?: { input_tokens?: number; output_tokens?: number };
+    error?: { message?: string };
+  };
+};
+
 /**
  * Streams an OpenAI-style Responses API call (`POST {baseUrl}/responses`).
  * Used by OpenAI (API key and Sign in with ChatGPT tokens) and xAI.
@@ -60,13 +73,13 @@ export async function* streamResponses(args: {
 
   for await (const ev of parseSSE(res.body)) {
     if (ev.data === "[DONE]") break;
-    let data: Record<string, any>;
+    let data: ResponsesEvent;
     try {
       data = JSON.parse(ev.data);
     } catch {
       continue;
     }
-    const type: string = data.type ?? ev.event ?? "";
+    const type = data.type ?? ev.event ?? "";
     if (type === "response.output_text.delta" && typeof data.delta === "string") {
       text += data.delta;
       yield { type: "delta", text: data.delta };

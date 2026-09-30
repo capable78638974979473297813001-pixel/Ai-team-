@@ -39,7 +39,7 @@ export abstract class BaseAdapter implements ProviderAdapter {
     return creds;
   }
 
-  async createConversation(creds: Credentials, opts: { model?: string | null; system: string }) {
+  async createConversation(creds: Credentials, opts: { model?: string | null; system: string }): Promise<ProviderConversation> {
     const model = opts.model || creds.extra.defaultModel || this.pickDefaultModel([]) || "";
     return {
       id: randomUUID(),

@@ -20,6 +20,11 @@ const TERMINAL = new Set(["FINISHED", "ERROR", "CANCELLED", "EXPIRED"]);
 /** Time between polls of a Cloud Agent run. Tests shorten it. */
 export const cursorTiming = { pollMs: 5_000, maxWaitMs: 30 * 60_000 };
 
+type AgentObject = { id: string; latestRunId?: string };
+type CreateAgentResponse = AgentObject & { agent?: AgentObject; run?: { id: string } };
+type FollowUpResponse = { id?: string; run?: { id: string } };
+type ModelsResponse = (string | { id?: string })[] | { models?: (string | { id?: string })[]; data?: (string | { id?: string })[] };
+
 type Run = {
   id: string;
   status: string;
@@ -84,9 +89,9 @@ export class CursorProvider extends BaseAdapter {
     });
     let models: string[] = [];
     try {
-      const body = await fetchJson<any>("Cursor", `${CURSOR_API}/v1/models`, { headers: this.headers(input.apiKey), timeoutMs: 15_000 });
+      const body = await fetchJson<ModelsResponse>("Cursor", `${CURSOR_API}/v1/models`, { headers: this.headers(input.apiKey), timeoutMs: 15_000 });
       const list = Array.isArray(body) ? body : (body.models ?? body.data ?? []);
-      models = list.map((m: any) => (typeof m === "string" ? m : m.id)).filter(Boolean);
+      models = list.map((m) => (typeof m === "string" ? m : m.id)).filter((m): m is string => !!m);
     } catch {
       /* optional */
     }
@@ -128,7 +133,7 @@ export class CursorProvider extends BaseAdapter {
     let runId: string | undefined;
 
     if (!agentId) {
-      const body = await fetchJson<any>("Cursor", `${CURSOR_API}/v1/agents`, {
+      const body = await fetchJson<CreateAgentResponse>("Cursor", `${CURSOR_API}/v1/agents`, {
         method: "POST",
         headers: this.headers(creds.accessToken),
         signal: opts.signal,
@@ -142,11 +147,11 @@ export class CursorProvider extends BaseAdapter {
         }),
       });
       const agent = body.agent ?? body;
-      agentId = agent.id as string;
+      agentId = agent.id;
       runId = body.run?.id ?? agent.latestRunId;
       conversation.remote.agentId = agentId;
     } else {
-      const body = await fetchJson<any>("Cursor", `${CURSOR_API}/v1/agents/${agentId}/runs`, {
+      const body = await fetchJson<FollowUpResponse>("Cursor", `${CURSOR_API}/v1/agents/${agentId}/runs`, {
         method: "POST",
         headers: this.headers(creds.accessToken),
         signal: opts.signal,

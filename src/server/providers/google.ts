@@ -19,6 +19,18 @@ import {
   type StreamChunk,
 } from "./types";
 
+/** The subset of streamGenerateContent chunks we consume. */
+type GeminiChunk = {
+  error?: { code?: number; message?: string };
+  candidates?: {
+    content?: { parts?: { text?: string; thought?: boolean }[] };
+    finishReason?: string;
+    groundingMetadata?: unknown;
+  }[];
+  usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+  modelVersion?: string;
+};
+
 export const GEMINI_API = "https://generativelanguage.googleapis.com/v1beta";
 export const GOOGLE_AUTH = {
   authorize: "https://accounts.google.com/o/oauth2/v2/auth",
@@ -275,7 +287,7 @@ export class GoogleProvider extends BaseAdapter {
     let served = model;
     let grounded = false;
     for await (const ev of parseSSE(res.body)) {
-      let data: any;
+      let data: GeminiChunk;
       try {
         data = JSON.parse(ev.data);
       } catch {

@@ -147,3 +147,27 @@ describe("orchestrator (sandbox agents)", () => {
     expect(getAdapter("cursor").capabilities()).not.toContain("chat");
   });
 });
+
+describe("tenant isolation", () => {
+  it("never pulls another user's imported conversation into a run's context", async () => {
+    const { saveImported } = await import("@/server/services/imports");
+    const victim = await makeUser(d);
+    const attacker = await makeUser(d);
+    const [secretId] = await saveImported(victim.id, [{ title: "secret", turns: [{ speaker: "You", text: "VICTIM-SECRET-TOKEN" }] }]);
+    await connectSandbox(attacker.id, ["anthropic"]);
+    const task = await createTask(attacker.id, "summarise the context", null);
+    const roster = await buildRoster(attacker.id, { task: "x", maxAgents: 5 });
+    const runId = await startRun({
+      userId: attacker.id,
+      taskId: task.id,
+      prompt: "summarise the context",
+      roster,
+      limits: DEFAULT_LIMITS,
+      options: { contextTaskIds: [secretId!] },
+    });
+    await awaitRun(runId);
+    const ars = await d.select().from(agentRuns).where(eq(agentRuns.taskRunId, runId));
+    const everything = JSON.stringify(ars) + JSON.stringify(await d.select().from(messages).where(eq(messages.taskId, task.id)));
+    expect(everything).not.toContain("VICTIM-SECRET-TOKEN");
+  });
+});

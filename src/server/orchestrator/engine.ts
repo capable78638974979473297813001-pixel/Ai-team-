@@ -563,7 +563,6 @@ export class Orchestrator {
       this.budget.begin();
       await sink.usage(this.budget);
       const callSignal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
-      let text = "";
       try {
         let done: { text: string; model: string; usage: { inputTokens: number; outputTokens: number } } | null = null;
         for await (const chunk of adapter.streamMessage(credentials, conversation, prompt, {
@@ -573,7 +572,6 @@ export class Orchestrator {
           allowPullRequests: this.input.allowPullRequests,
         })) {
           if (chunk.type === "delta") {
-            text += chunk.text;
             if (!opts.silentOutput) sink.delta(agentRunId, chunk.text);
           } else if (chunk.type === "tool") {
             await sink.tool(agentRunId, agent, chunk.name, chunk.status, chunk.detail);

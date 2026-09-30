@@ -1,6 +1,6 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
-import { appOrigin } from "../env";
+import { appOrigin, env } from "../env";
 import { audit } from "../security/audit";
 import { rateLimit, RULES, type RateRule } from "../security/rate-limit";
 import { log } from "../security/redact";
@@ -20,9 +20,14 @@ export class ApiError extends Error {
 
 export type RequestMeta = { ip: string; userAgent: string | null };
 
+/**
+ * Client IP for rate limiting and audit. Forwarding headers are client-controlled,
+ * so they are only honoured when TRUST_PROXY=true (i.e. a proxy overwrites them).
+ */
 export function requestMeta(req: Request): RequestMeta {
-  const fwd = req.headers.get("x-forwarded-for")?.split(",")[0]?.trim();
-  return { ip: fwd || req.headers.get("x-real-ip") || "local", userAgent: req.headers.get("user-agent") };
+  const trusted = env().TRUST_PROXY === "true";
+  const fwd = trusted ? req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() || req.headers.get("x-real-ip") : null;
+  return { ip: fwd || "direct", userAgent: req.headers.get("user-agent") };
 }
 
 /**
@@ -42,7 +47,13 @@ type Ctx<Auth extends boolean> = {
   session: Auth extends true ? CurrentSession : CurrentSession | null;
 };
 
-type Options<Auth extends boolean> = { auth: Auth; rate?: RateRule; rateKey?: string };
+type Options<Auth extends boolean> = {
+  auth: Auth;
+  rate?: RateRule;
+  rateKey?: string;
+  /** Login/signup run before a session exists; they rely on the Origin check. */
+  csrfToken?: boolean;
+};
 
 export function api<Auth extends boolean, P = unknown>(
   opts: Options<Auth>,
@@ -64,7 +75,7 @@ export function api<Auth extends boolean, P = unknown>(
       const session = await lookupSession(token);
       if (opts.auth && !session) throw new ApiError(401, "Sign in required", "unauthenticated");
 
-      if (mutating && session && !verifyCsrf(session.id, req.headers.get("x-csrf-token"))) {
+      if (mutating && session && opts.csrfToken !== false && !verifyCsrf(session.id, req.headers.get("x-csrf-token"))) {
         await audit("security.csrf_rejected", { userId: session.user.id, ip: meta.ip }, undefined, {
           reason: "token",
           path: new URL(req.url).pathname,
@@ -104,6 +115,8 @@ export function api<Auth extends boolean, P = unknown>(
 }
 
 export async function readJson(req: Request, maxBytes = 256 * 1024): Promise<unknown> {
+  const declared = Number(req.headers.get("content-length") ?? "0");
+  if (declared > maxBytes) throw new ApiError(413, "Request too large");
   const text = await req.text();
   if (text.length > maxBytes) throw new ApiError(413, "Request too large");
   if (!text) return {};

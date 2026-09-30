@@ -152,9 +152,12 @@ export async function getActiveConnection(userId: string, provider: ProviderId):
 
   if (credentials.expiresAt && credentials.expiresAt.getTime() - Date.now() < 60_000) {
     try {
-      credentials = await adapter.refreshAuth(credentials);
-      await persistRefreshed(userId, provider, credentials);
-      await db().insert(providerEvents).values({ userId, provider, type: "refresh", data: { ok: true } });
+      credentials = await singleFlightRefresh(`${userId}:${provider}`, async () => {
+        const next = await adapter.refreshAuth(credentials);
+        await persistRefreshed(userId, provider, next);
+        await db().insert(providerEvents).values({ userId, provider, type: "refresh", data: { ok: true } });
+        return next;
+      });
     } catch (err) {
       await markExpired(userId, provider, err instanceof Error ? err.message : "Refresh failed");
       await audit("connection.refresh_failed", { userId }, { type: "provider", id: provider });
@@ -169,6 +172,21 @@ export async function getActiveConnection(userId: string, provider: ProviderId):
     capabilities: adapter.capabilities(method),
     simulated: method === "sandbox",
   };
+}
+
+/**
+ * Parallel agents can hit an expiring token at the same moment. Providers that
+ * rotate refresh tokens would reject the second refresh, so only one runs per
+ * connection and the others share its result.
+ */
+const inflightRefresh = new Map<string, Promise<Credentials>>();
+function singleFlightRefresh(key: string, fn: () => Promise<Credentials>) {
+  let p = inflightRefresh.get(key);
+  if (!p) {
+    p = fn().finally(() => inflightRefresh.delete(key));
+    inflightRefresh.set(key, p);
+  }
+  return p;
 }
 
 async function persistRefreshed(userId: string, provider: ProviderId, c: Credentials) {
