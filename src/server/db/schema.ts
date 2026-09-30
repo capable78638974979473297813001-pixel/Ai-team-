@@ -1,5 +1,6 @@
 import {
   bigserial,
+  doublePrecision,
   boolean,
   index,
   integer,
@@ -192,6 +193,11 @@ export const taskRuns = pgTable(
     stopReason: text("stop_reason"),
     error: text("error"),
     options: jsonb("options").$type<RunOptions>().notNull().default({}),
+    /** The server process executing this run, and its liveness heartbeat. */
+    instanceId: text("instance_id"),
+    heartbeatAt: timestamp("heartbeat_at", { withTimezone: true }),
+    /** Set by any instance; the owning instance aborts the run when it sees it. */
+    cancelRequestedAt: timestamp("cancel_requested_at", { withTimezone: true }),
     createdAt: createdAt(),
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
@@ -309,3 +315,11 @@ export const auditEvents = pgTable(
   },
   (t) => [index("audit_events_user_idx").on(t.userId, t.createdAt)],
 );
+
+/** Token buckets for the Postgres-backed rate limiter (RATE_LIMIT_STORE=postgres). */
+export const rateLimits = pgTable("rate_limits", {
+  key: text("key").primaryKey(),
+  tokens: doublePrecision("tokens").notNull(),
+  allowed: boolean("allowed").notNull().default(true),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+});

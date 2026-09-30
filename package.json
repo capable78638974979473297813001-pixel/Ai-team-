@@ -5,14 +5,16 @@
   "scripts": {
     "dev": "next dev",
     "build": "next build",
-    "start": "next start",
+    "start": "NEXT_MANUAL_SIG_HANDLE=true next start",
     "lint": "eslint",
     "test": "vitest run",
     "typecheck": "next typegen && tsc --noEmit",
     "db:generate": "drizzle-kit generate",
-    "db:migrate": "tsx --env-file-if-exists=.env.local scripts/migrate.ts",
+    "db:migrate": "node --env-file-if-exists=.env.local scripts/migrate.mjs",
     "setup": "node scripts/setup-env.mjs",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "check:multi-instance": "tsx scripts/multi-instance.ts",
+    "check:shutdown": "node --env-file-if-exists=.env.local scripts/shutdown-check.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.130.0",

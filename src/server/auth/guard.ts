@@ -85,7 +85,7 @@ export function api<Auth extends boolean, P = unknown>(
 
       const rule = opts.rate ?? RULES.api;
       const key = `${opts.rateKey ?? new URL(req.url).pathname}:${session?.user.id ?? meta.ip}`;
-      const rl = rateLimit(key, rule);
+      const rl = await rateLimit(key, rule);
       if (!rl.ok) {
         await audit("security.rate_limited", { userId: session?.user.id, ip: meta.ip }, undefined, { key: opts.rateKey });
         return NextResponse.json(

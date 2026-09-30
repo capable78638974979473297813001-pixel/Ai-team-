@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
 import { db } from "../db/client";
 import {
   agentRuns,
@@ -11,13 +11,18 @@ import {
   type RunOptions,
 } from "../db/schema";
 import { env } from "../env";
+import { INSTANCE_ID } from "../instance";
+import { notifyCancel } from "./pg-coordination";
 import { log, redactString } from "../security/redact";
 import { getAdapter } from "../providers/registry";
 import { isProviderId } from "../providers/registry";
 import { getActiveConnection, markExpired } from "../services/connections";
 import { loadPricing, type Budget } from "./budget";
 import { CancelledError, Orchestrator, type EngineAgent, type RunSink } from "./engine";
-import { bus, type AgentRunView, type MessageView, type RunView } from "./events";
+import { bus } from "./events";
+import { toAgentRunView, toMessageView, toRunView } from "./views";
+
+export { toAgentRunView, toMessageView, toRunView };
 
 type Active = { controller: AbortController; taskId: string; done?: Promise<void> };
 const g = globalThis as unknown as { __aiteamActive?: Map<string, Active> };
@@ -25,57 +30,6 @@ const active = (g.__aiteamActive ??= new Map<string, Active>());
 
 export function isRunActive(runId: string) {
   return active.has(runId);
-}
-
-export function toMessageView(m: typeof messages.$inferSelect): MessageView {
-  return {
-    id: m.id,
-    seq: m.seq,
-    taskRunId: m.taskRunId,
-    agentRunId: m.agentRunId,
-    authorType: m.authorType as MessageView["authorType"],
-    provider: m.provider,
-    model: m.model,
-    agentKey: m.agentKey,
-    roleTitle: m.roleTitle,
-    kind: m.kind,
-    content: m.content,
-    metadata: m.metadata,
-    replyToIds: m.replyToIds,
-    createdAt: m.createdAt.toISOString(),
-  };
-}
-
-export function toAgentRunView(a: typeof agentRuns.$inferSelect): AgentRunView {
-  return {
-    id: a.id,
-    taskRunId: a.taskRunId,
-    agentKey: a.agentKey,
-    provider: a.provider,
-    model: a.model,
-    roleTitle: a.roleTitle,
-    kind: a.kind,
-    round: a.round,
-    title: a.title,
-    status: a.status,
-    summary: a.summary,
-    error: a.error,
-    startedAt: a.startedAt?.toISOString() ?? null,
-    finishedAt: a.finishedAt?.toISOString() ?? null,
-  };
-}
-
-export function toRunView(r: typeof taskRuns.$inferSelect): RunView {
-  return {
-    id: r.id,
-    status: r.status,
-    phase: r.phase,
-    round: r.round,
-    usage: r.usage,
-    stopReason: r.stopReason,
-    error: r.error,
-    limits: r.limits,
-  };
 }
 
 /** Persists everything the engine does and mirrors it onto the live event bus. */
@@ -301,6 +255,8 @@ export async function startRun(args: {
       limits: args.limits,
       roster: args.roster,
       options: args.options,
+      instanceId: INSTANCE_ID,
+      heartbeatAt: new Date(),
     })
     .returning();
   const sink = new DbRunSink(args.userId, args.taskId, run!.id);
@@ -311,6 +267,7 @@ export async function startRun(args: {
   const entry: Active = { controller, taskId: args.taskId };
   active.set(run!.id, entry);
   entry.done = execute(args, run!.id, sink, controller).finally(() => active.delete(run!.id));
+  ensureHeartbeat();
   return run!.id;
 }
 
@@ -349,7 +306,11 @@ async function execute(
     status = result.status;
     stopReason = result.stopReason;
   } catch (err) {
-    if (err instanceof CancelledError || controller.signal.aborted) {
+    if (controller.signal.reason === SHUTDOWN) {
+      status = "failed";
+      error = "Interrupted: the server restarted while the team was working. Send the message again to retry.";
+      await sink.postMessage({ authorType: "system", kind: "status", content: error }).catch(() => {});
+    } else if (err instanceof CancelledError || controller.signal.aborted) {
       status = "cancelled";
       stopReason = "cancelled by you";
       await sink.postMessage({ authorType: "orchestrator", kind: "status", content: "Stopped. Work in progress was cancelled." }).catch(() => {});
@@ -377,6 +338,7 @@ export async function awaitRun(runId: string) {
   await active.get(runId)?.done;
 }
 
+/** Abort a run owned by this instance. */
 export function cancelRun(runId: string) {
   const a = active.get(runId);
   if (!a) return false;
@@ -384,18 +346,93 @@ export function cancelRun(runId: string) {
   return true;
 }
 
-/** Runs left "running" by a previous process can never finish; mark them. */
-export async function reapOrphanedRuns(taskId: string) {
-  const running = await db()
-    .select({ id: taskRuns.id })
+/**
+ * Cancel a run wherever it executes: locally if this instance owns it, otherwise
+ * by flagging it in the database and notifying the other instances. The owner
+ * also polls the flag on its heartbeat, so a missed notification still cancels.
+ */
+export async function requestCancel(runId: string) {
+  if (cancelRun(runId)) return true;
+  const updated = await db()
+    .update(taskRuns)
+    .set({ cancelRequestedAt: new Date() })
+    .where(and(eq(taskRuns.id, runId), inArray(taskRuns.status, ["queued", "running"])))
+    .returning({ id: taskRuns.id });
+  if (!updated.length) return false;
+  await notifyCancel(runId).catch(() => {});
+  return true;
+}
+
+const SHUTDOWN = "server-shutdown";
+
+export const HEARTBEAT_MS = 10_000;
+/** A run whose owner hasn't heartbeated for this long is considered dead. */
+export const STALE_AFTER_MS = 45_000;
+
+let heartbeat: ReturnType<typeof setInterval> | null = null;
+
+function ensureHeartbeat() {
+  if (heartbeat) return;
+  heartbeat = setInterval(() => void beat(), HEARTBEAT_MS);
+  heartbeat.unref?.();
+}
+
+/** Keep our runs marked alive and pick up cancel requests made on other instances. */
+export async function beat() {
+  const ids = [...active.keys()];
+  if (!ids.length) {
+    if (heartbeat) clearInterval(heartbeat);
+    heartbeat = null;
+    return;
+  }
+  try {
+    const rows = await db()
+      .update(taskRuns)
+      .set({ heartbeatAt: new Date() })
+      .where(inArray(taskRuns.id, ids))
+      .returning({ id: taskRuns.id, cancelRequestedAt: taskRuns.cancelRequestedAt });
+    for (const r of rows) if (r.cancelRequestedAt) cancelRun(r.id);
+  } catch (err) {
+    log.error("heartbeat failed", err);
+  }
+}
+
+/** Abort every local run, e.g. on SIGTERM, and wait for them to record their final state. */
+export async function shutdownRuns(timeoutMs = 10_000) {
+  const entries = [...active.values()];
+  for (const a of entries) a.controller.abort(SHUTDOWN);
+  await Promise.race([
+    Promise.allSettled(entries.map((a) => a.done)),
+    new Promise((r) => setTimeout(r, timeoutMs)),
+  ]);
+}
+
+/**
+ * Runs whose owning instance stopped heartbeating can never finish; mark them.
+ * Runs owned by other live instances are left alone.
+ */
+export async function reapOrphanedRuns(taskId?: string) {
+  const staleBefore = new Date(Date.now() - STALE_AFTER_MS);
+  const stale = await db()
+    .select({ id: taskRuns.id, taskId: taskRuns.taskId })
     .from(taskRuns)
-    .where(and(eq(taskRuns.taskId, taskId), inArray(taskRuns.status, ["queued", "running"])));
-  for (const r of running) {
+    .where(
+      and(
+        taskId ? eq(taskRuns.taskId, taskId) : undefined,
+        inArray(taskRuns.status, ["queued", "running"]),
+        or(
+          and(isNotNull(taskRuns.heartbeatAt), lt(taskRuns.heartbeatAt, staleBefore)),
+          and(isNull(taskRuns.heartbeatAt), lt(taskRuns.createdAt, staleBefore)),
+        ),
+      ),
+    );
+  for (const r of stale) {
     if (active.has(r.id)) continue;
     await db()
       .update(taskRuns)
-      .set({ status: "failed", phase: "done", error: "Interrupted by a server restart", finishedAt: new Date() })
-      .where(eq(taskRuns.id, r.id));
-    await db().update(tasks).set({ status: "failed" }).where(eq(tasks.id, taskId));
+      .set({ status: "failed", phase: "done", error: "Interrupted: the server running this task stopped", finishedAt: new Date() })
+      .where(and(eq(taskRuns.id, r.id), inArray(taskRuns.status, ["queued", "running"])));
+    await db().update(tasks).set({ status: "failed" }).where(and(eq(tasks.id, r.taskId), eq(tasks.status, "running")));
   }
+  return stale.length;
 }

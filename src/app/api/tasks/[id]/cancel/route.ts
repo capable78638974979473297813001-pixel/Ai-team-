@@ -2,7 +2,7 @@ import { and, eq, inArray } from "drizzle-orm";
 import { api, ApiError } from "@/server/auth/guard";
 import { db } from "@/server/db/client";
 import { taskRuns } from "@/server/db/schema";
-import { cancelRun } from "@/server/orchestrator/runner";
+import { requestCancel } from "@/server/orchestrator/runner";
 import { audit } from "@/server/security/audit";
 import { getOwnedTask } from "@/server/services/tasks";
 
@@ -13,7 +13,7 @@ export const POST = api<true, { id: string }>({ auth: true }, async ({ session, 
     .from(taskRuns)
     .where(and(eq(taskRuns.taskId, id), inArray(taskRuns.status, ["queued", "running"])));
   let cancelled = 0;
-  for (const r of runs) if (cancelRun(r.id)) cancelled++;
+  for (const r of runs) if (await requestCancel(r.id)) cancelled++;
   if (cancelled) await audit("task.cancel", { userId: session.user.id, ...meta }, { type: "task", id });
   return { cancelled };
 });

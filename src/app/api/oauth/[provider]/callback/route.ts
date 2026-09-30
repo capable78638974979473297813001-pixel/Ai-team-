@@ -18,7 +18,7 @@ export async function GET(req: Request, ctx: { params: Promise<{ provider: strin
   const { provider } = await ctx.params;
   const meta = requestMeta(req);
   if (!isProviderId(provider)) return NextResponse.json({ error: "Unknown provider" }, { status: 404 });
-  if (!rateLimit(`oauth-callback:${meta.ip}`, RULES.connect).ok) {
+  if (!(await rateLimit(`oauth-callback:${meta.ip}`, RULES.connect)).ok) {
     return NextResponse.json({ error: "Too many attempts" }, { status: 429 });
   }
 

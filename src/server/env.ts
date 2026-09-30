@@ -16,6 +16,15 @@ const schema = z.object({
   /** Secret used to derive CSRF tokens. */
   SESSION_SECRET: z.string().min(32).optional(),
 
+  /**
+   * Cross-instance coordination. "postgres" uses LISTEN/NOTIFY for live events and
+   * cancellation so several app instances can serve the same users. Defaults to
+   * "postgres" in production and "memory" elsewhere.
+   */
+  EVENT_BUS: z.enum(["memory", "postgres"]).optional(),
+  /** "postgres" shares rate-limit buckets across instances. Same defaults as EVENT_BUS. */
+  RATE_LIMIT_STORE: z.enum(["memory", "postgres"]).optional(),
+
   /** Clearly-labelled simulated agents for local development. Never on in production. */
   ENABLE_SANDBOX_AGENTS: z.enum(["true", "false"]).optional(),
 
@@ -73,6 +82,11 @@ export function sandboxEnabled() {
   const e = env();
   if (e.NODE_ENV === "production") return false;
   return e.ENABLE_SANDBOX_AGENTS !== "false";
+}
+
+export function distributed(kind: "EVENT_BUS" | "RATE_LIMIT_STORE") {
+  const e = env();
+  return (e[kind] ?? (e.NODE_ENV === "production" ? "postgres" : "memory")) === "postgres";
 }
 
 export function appOrigin() {

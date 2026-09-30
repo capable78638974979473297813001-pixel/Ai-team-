@@ -4,7 +4,7 @@ import { csrfTokenFor, verifyCsrf } from "@/server/auth/session";
 import { decrypt, encrypt, resetKeyring } from "@/server/security/crypto";
 import { hashPassword, verifyPassword } from "@/server/security/password";
 import { codeChallengeS256, createCodeVerifier } from "@/server/security/pkce";
-import { rateLimit, resetRateLimits } from "@/server/security/rate-limit";
+import { rateLimitMemory as rateLimit, resetRateLimits } from "@/server/security/rate-limit";
 import { redact, redactString } from "@/server/security/redact";
 import { resetEnvCache } from "@/server/env";
 import { randomBytes } from "node:crypto";

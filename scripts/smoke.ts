@@ -5,6 +5,8 @@
  *   npm run dev            # in one terminal
  *   npm run smoke          # in another
  */
+export {};
+
 const BASE = process.env.SMOKE_URL ?? "http://localhost:3000";
 let cookie = "";
 let csrf = "";

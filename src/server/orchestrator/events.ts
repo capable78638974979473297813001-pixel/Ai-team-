@@ -1,4 +1,5 @@
 import type { RunUsage } from "../db/schema";
+import { INSTANCE_ID } from "../instance";
 
 export type MessageView = {
   id: string;
@@ -54,13 +55,29 @@ export type RunEvent =
 
 type Listener = (e: RunEvent) => void;
 
+/** Carries events to other app instances. */
+export interface EventTransport {
+  send(e: RunEvent): void;
+}
+
 /**
- * In-process pub/sub keyed by task. Durable state lives in Postgres; this only
- * carries live updates to open SSE connections. For multiple app instances,
- * replace with Postgres LISTEN/NOTIFY or Redis pub/sub behind this interface.
+ * Pub/sub keyed by task. Durable state lives in Postgres; the bus only carries
+ * live updates to open SSE connections. With a transport installed (Postgres
+ * LISTEN/NOTIFY, see pg-coordination.ts) events also reach subscribers on
+ * other instances.
  */
 class EventBus {
   private listeners = new Map<string, Set<Listener>>();
+  private transport: EventTransport | null = null;
+  readonly instanceId = INSTANCE_ID;
+
+  setTransport(t: EventTransport | null) {
+    this.transport = t;
+  }
+
+  hasTransport() {
+    return !!this.transport;
+  }
 
   subscribe(taskId: string, fn: Listener) {
     let set = this.listeners.get(taskId);
@@ -72,7 +89,14 @@ class EventBus {
     };
   }
 
+  /** Publish from this instance: deliver locally and forward to other instances. */
   publish(e: RunEvent) {
+    this.deliver(e);
+    this.transport?.send(e);
+  }
+
+  /** Deliver to local subscribers only (used for events received from other instances). */
+  deliver(e: RunEvent) {
     for (const fn of this.listeners.get(e.taskId) ?? []) {
       try {
         fn(e);
@@ -80,6 +104,10 @@ class EventBus {
         /* a broken listener must not break the run */
       }
     }
+  }
+
+  hasSubscribers(taskId: string) {
+    return this.listeners.has(taskId);
   }
 }
 

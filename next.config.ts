@@ -16,6 +16,9 @@ const securityHeaders = [
 
 const nextConfig: NextConfig = {
   poweredByHeader: false,
+  output: "standalone",
+  // Lets several local instances run side by side (see scripts/multi-instance.ts).
+  distDir: process.env.NEXT_DIST_DIR ?? ".next",
   serverExternalPackages: ["postgres"],
   async headers() {
     return [

@@ -57,11 +57,35 @@ npm run dev            # http://localhost:3000
 Other commands:
 
 ```bash
-npm test               # unit + integration tests (in-memory Postgres via PGlite)
-npm run smoke          # end-to-end test against a running dev server (sandbox agents)
+npm test                      # unit + integration tests (in-memory Postgres via PGlite)
+TEST_DATABASE_URL=… npm test  # also runs the real LISTEN/NOTIFY tests
+npm run smoke                 # end-to-end test against a running dev server (sandbox agents)
+npm run check:multi-instance  # two servers on :3000/:3001 — cross-instance streaming + cancel
+npm run check:shutdown        # production server exits cleanly on SIGTERM (after npm run build)
 npm run lint && npm run typecheck
-npm run build && npm start   # production (requires https APP_URL + secrets)
+npm run build && npm start    # production (requires https APP_URL + secrets)
 ```
+
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, the test suite against a Postgres service, the production build, migrations, and the smoke and multi-instance checks against two live servers.
+
+## Deploying
+
+```bash
+docker build -t ai-team .
+docker run --rm -e DATABASE_URL=… ai-team node scripts/migrate.mjs   # once per release
+docker run -p 3000:3000 --env-file .env ai-team
+# or: docker compose up   (Postgres + migrations + app)
+```
+
+The image is a Next.js standalone build running as a non-root user, with a health check on `/api/health`. On `SIGTERM` the server stops accepting work, cancels in-flight runs (they are marked "interrupted" so the user can retry), and closes its database listeners.
+
+**Running several instances.** In production, `EVENT_BUS` and `RATE_LIMIT_STORE` default to `postgres`:
+- Live run events fan out through Postgres `LISTEN/NOTIFY`, so an SSE client can be connected to any instance. Large messages are sent as a reference and loaded from the database.
+- Cancel requests reach whichever instance owns the run, via NOTIFY and a `cancel_requested_at` flag the owner polls on its heartbeat.
+- Each run records its owning instance and a 10-second heartbeat. A run is only marked interrupted once its owner has been silent for 45 seconds, so a live run on another instance is never reaped.
+- Rate-limit buckets are shared through one atomic upsert per check.
+
+No sticky sessions are required. Behind a load balancer, set `TRUST_PROXY=true` so client IPs come from `X-Forwarded-For`.
 
 For local development without any provider keys, `ENABLE_SANDBOX_AGENTS=true` (the default outside production) adds a **Sandbox (simulated)** connection method to every provider. Sandbox agents follow the full protocol with deterministic output, and their messages are marked `metadata.simulated = true`.
 
@@ -98,6 +122,12 @@ curl -N -b jar localhost:3000/api/tasks/<taskId>/stream
 | POST | `/api/auth/signup`, `/api/auth/login` | Create a session. Returns `{ user, csrfToken }`. |
 | GET | `/api/auth/session` | Current user and CSRF token |
 | POST | `/api/auth/logout`, `/api/auth/logout-all` | End this session, or every session |
+| GET | `/api/auth/sessions` | Your sessions (IP, user agent, last seen) |
+| DELETE | `/api/auth/sessions/:id` | Revoke one session |
+| POST | `/api/auth/password` | `{currentPassword, newPassword}`. Signs out every other session. |
+| GET | `/api/audit` | Your security and activity log |
+| DELETE | `/api/account` | `{password}`. Cancels runs, revokes provider grants, deletes all data. |
+| GET | `/api/openapi.json` | OpenAPI 3.1 description of this API |
 | GET | `/api/providers` | Providers, connection methods (availability, billing) and capabilities |
 | GET | `/api/connections` | Your connection states: `connected`, `not_connected`, `unsupported`, `coming_soon`, `expired` |
 | POST | `/api/connections/:provider` | `{method:"api_key", apiKey}`, `{method:"oauth", fields}` (returns `{redirect}`), or `{method:"sandbox"}` |
@@ -110,7 +140,7 @@ curl -N -b jar localhost:3000/api/tasks/<taskId>/stream
 | GET/POST | `/api/tasks` | List conversations, or start a task `{prompt, teamId?, providers?, repoUrl?, allowPullRequests?, contextTaskIds?, limits?}` |
 | GET/PATCH/DELETE | `/api/tasks/:id` | Full thread (runs, messages, agent runs, tool activity), rename, delete |
 | POST | `/api/tasks/:id/runs` | Follow-up message in the same conversation |
-| POST | `/api/tasks/:id/cancel` | Stop the running team |
+| POST | `/api/tasks/:id/cancel` | Stop the running team (works from any instance) |
 | GET | `/api/tasks/:id/stream` | SSE: `snapshot`, then `run`, `message`, `agent`, `delta`, `tool` |
 | POST | `/api/imports` | Import `{source:"text", text}`, `{source:"chatgpt_export", json}` or `{source:"claude_export", json}` |
 | GET/PUT | `/api/settings` | Default orchestration limits |
@@ -130,10 +160,12 @@ src/server/
   security/                 crypto (AES-GCM), password (scrypt), pkce, rate-limit, redact, audit
   auth/                     sessions, CSRF, API route guard
   providers/                ProviderAdapter + OpenAI, Anthropic, Google, xAI, Cursor, sandbox
-  orchestrator/             protocol (prompts/parsers), engine, budget, runner, event bus
+  orchestrator/             protocol (prompts/parsers), engine, budget, runner, event bus,
+                            pg-coordination (cross-instance LISTEN/NOTIFY)
+  lifecycle.ts              startup, maintenance, graceful shutdown (via src/instrumentation.ts)
   services/                 connections, oauth, teams, tasks, imports, users
 src/app/api/                route handlers
 drizzle/                    SQL migrations
 tests/                      Vitest suites
-scripts/                    migrate, setup-env, smoke
+scripts/                    migrate, setup-env, smoke, multi-instance and shutdown checks
 ```

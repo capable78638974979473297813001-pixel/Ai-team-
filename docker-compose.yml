@@ -1,0 +1,31 @@
+# Local production-like stack. Secrets come from .env (see .env.example).
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: aiteam
+      POSTGRES_PASSWORD: aiteam
+      POSTGRES_DB: aiteam
+    volumes: [pgdata:/var/lib/postgresql/data]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U aiteam"]
+      interval: 5s
+  migrate:
+    build: .
+    command: ["node", "scripts/migrate.mjs"]
+    environment:
+      DATABASE_URL: postgres://aiteam:aiteam@db:5432/aiteam
+    depends_on:
+      db: { condition: service_healthy }
+  app:
+    build: .
+    env_file: .env
+    environment:
+      DATABASE_URL: postgres://aiteam:aiteam@db:5432/aiteam
+      EVENT_BUS: postgres
+      RATE_LIMIT_STORE: postgres
+    ports: ["3000:3000"]
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+volumes:
+  pgdata:

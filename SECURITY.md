@@ -16,11 +16,12 @@ To report a vulnerability, email the maintainers privately. Don't open a public 
 | Control | Implementation |
 |---|---|
 | Password storage | scrypt (N=2¹⁵, r=8, p=1, 16-byte salt, 64-byte key), `security/password.ts`. Login runs a dummy hash for unknown emails to equalise timing. |
-| Sessions | 256-bit random token in the cookie. The database stores only its SHA-256 (`sessions.id`). 30-day absolute lifetime. Revocable individually (`/api/auth/logout`) or everywhere (`/api/auth/logout-all`). |
+| Sessions | 256-bit random token in the cookie. The database stores only its SHA-256 (`sessions.id`). 30-day absolute lifetime. Users can list their sessions, revoke any one, sign out everywhere, and changing the password signs out every other session. The session handle exposed by the API is a prefix of the stored hash, which can't be used to authenticate. |
+| Account deletion | Requires the password again. Cancels running work, revokes every provider grant that supports revocation, then deletes the user and all cascaded data. |
 | Cookie | `HttpOnly`, `SameSite=Lax`, `Path=/`. Over HTTPS it is also `Secure` and uses the `__Host-` prefix (so no `Domain` attribute and no subdomain injection). |
 | CSRF | Two layers on every state-changing request: (1) the `Origin` header must exactly equal `APP_URL`'s origin (or `Sec-Fetch-Site: same-origin`), otherwise the request is refused; (2) an `x-csrf-token` header must match `HMAC(SESSION_SECRET, "csrf:" + sessionId)`. The token comes from `/api/auth/login`, `/api/auth/signup` or `/api/auth/session`. Login and signup have no session yet, so they rely on the Origin check. |
 | CORS | None. No `Access-Control-Allow-*` headers are sent, so other origins can't read responses. `Cross-Origin-Resource-Policy: same-origin` is also set. |
-| Rate limiting | Token buckets per route and per user (or per IP when unauthenticated): auth 10/min, connect 20 per 5 min, task 12/min, general API 120 burst. `X-Forwarded-For` is only trusted when `TRUST_PROXY=true`. The store is in-memory, so swap in Redis for multi-instance deployments. |
+| Rate limiting | Token buckets per route and per user (or per IP when unauthenticated): auth 10/min, connect 20 per 5 min, task 12/min, general API 120 burst. `X-Forwarded-For` is only trusted when `TRUST_PROXY=true`. Buckets live in Postgres (`RATE_LIMIT_STORE=postgres`, the production default) so limits hold across instances. If that store is unavailable, the check falls back to the local in-memory limiter rather than failing requests. |
 | Headers | `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'` (API-only), `X-Content-Type-Options: nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, `Cache-Control: no-store`, and HSTS in production. |
 | Authorization | Every task, team, run, message and connection query is scoped by `user_id`. Imported context is joined on `tasks.user_id` even after route-level checks (defence in depth). Tests cover cross-tenant reads. |
 
@@ -69,7 +70,7 @@ An API key is a developer credential the user creates in the provider's own cons
 
 - All server logging goes through `security/redact.ts`, which strips values under secret-looking keys and anything shaped like a credential: `sk-…`, `sk-ant-…`, `xai-…`, `crsr_…`, `AIza…`, `ya29.…`, `Bearer …` and JWTs. Provider error messages are redacted before they're stored or returned.
 - `provider_events` records sanitised call metadata (kind, model, status, token usage, tool names). It never records prompts, credentials or raw responses.
-- `audit_events` records sign-up, sign-in and failures, sign-out, connect and disconnect, OAuth start, invalid OAuth state, refresh failures and expiries, team and task changes, imports, settings changes, CSRF rejections and rate-limit hits. Each entry has the user, IP (per `TRUST_PROXY`) and user agent.
+- `audit_events` records sign-up, sign-in and failures, sign-out, session revocation, password changes, account deletion, connect and disconnect, OAuth start, invalid OAuth state, refresh failures and expiries, team and task changes, imports, settings changes, CSRF rejections and rate-limit hits. Each entry has the user, IP (per `TRUST_PROXY`) and user agent. Users can read their own log at `GET /api/audit`.
 
 ## Agent safety
 
@@ -85,7 +86,7 @@ OAuth grants don't give access to a user's provider chat history, and we don't t
 
 ## Operational notes and known limitations
 
-- Rate limiting, the live event bus and run cancellation are in-process. A multi-instance deployment needs Redis (or Postgres LISTEN/NOTIFY) behind the same interfaces, plus sticky routing for SSE.
-- Runs left `running` by a crashed process are marked failed on next access.
+- Multi-instance: live events and cancel requests travel over Postgres `LISTEN/NOTIFY`. NOTIFY payloads carry run events but never credentials. Runs are owned by one instance and kept alive by a heartbeat. A run is only marked interrupted after its owner has been silent for 45 seconds, and on `SIGTERM` in-flight runs are stopped and recorded as interrupted.
+- The production container runs as a non-root user and contains no `.env` files (`.dockerignore`).
 - Signup returns 409 for an existing email. This is a deliberate usability trade-off: account enumeration is possible but rate-limited.
 - Sandbox agents are for local development only. They are disabled whenever `NODE_ENV=production`, and every message they produce is labelled `simulated`.
