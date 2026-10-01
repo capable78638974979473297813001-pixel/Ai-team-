@@ -4,12 +4,12 @@ import { idempotent } from "@/server/services/idempotency";
 import { db } from "@/server/db/client";
 import { tasks } from "@/server/db/schema";
 import { clampLimits } from "@/server/orchestrator/budget";
-import { startRun } from "@/server/orchestrator/runner";
+import { assertRunCapacity, RunCapacityError, startRun } from "@/server/orchestrator/runner";
 import { audit } from "@/server/security/audit";
 import { RULES } from "@/server/security/rate-limit";
 import type { ProviderId } from "@/server/providers/types";
 import { runRequest } from "@/server/services/run-request";
-import { createTask, listTasksPage } from "@/server/services/tasks";
+import { createTask, deleteTask, listTasksPage } from "@/server/services/tasks";
 import { buildRoster } from "@/server/services/teams";
 import { getUserLimits } from "@/server/services/users";
 
@@ -49,6 +49,7 @@ export const POST = api({ auth: true, rate: RULES.task, rateKey: "task" }, async
   }
   if (!roster.length) throw new ApiError(400, "Connect at least one AI account first", "no_agents");
 
+  await assertRunCapacity(userId).catch(rethrowCapacity);
   const task = await createTask(userId, body.prompt, body.teamId ?? null);
   const runId = await startRun({
     userId,
@@ -62,8 +63,17 @@ export const POST = api({ auth: true, rate: RULES.task, rateKey: "task" }, async
       allowPullRequests: body.allowPullRequests,
       contextTaskIds: body.contextTaskIds,
     },
+  }).catch(async (err) => {
+    // Lost the race for the last run slot: don't leave an empty conversation behind.
+    if (err instanceof RunCapacityError) await deleteTask(userId, task.id);
+    return rethrowCapacity(err);
   });
   await audit("task.create", { userId, ...meta }, { type: "task", id: task.id }, { agents: roster.map((r) => r.provider) });
   return { taskId: task.id, runId };
   });
 });
+
+function rethrowCapacity(err: unknown): never {
+  if (err instanceof RunCapacityError) throw new ApiError(429, err.message, "too_many_runs");
+  throw err;
+}

@@ -5,7 +5,7 @@ import { idempotent } from "@/server/services/idempotency";
 import { db } from "@/server/db/client";
 import { taskRuns } from "@/server/db/schema";
 import { clampLimits } from "@/server/orchestrator/budget";
-import { reapOrphanedRuns, startRun } from "@/server/orchestrator/runner";
+import { reapOrphanedRuns, RunCapacityError, startRun } from "@/server/orchestrator/runner";
 import { audit } from "@/server/security/audit";
 import { RULES } from "@/server/security/rate-limit";
 import type { ProviderId } from "@/server/providers/types";
@@ -58,6 +58,9 @@ export const POST = api<true, { id: string }>({ auth: true, rate: RULES.task, ra
       allowPullRequests: body.allowPullRequests,
       contextTaskIds: body.contextTaskIds.length ? body.contextTaskIds : (previous?.options.contextTaskIds ?? []),
     },
+  }).catch((err) => {
+    if (err instanceof RunCapacityError) throw new ApiError(429, err.message, "too_many_runs");
+    throw err;
   });
   await audit("task.run", { userId, ...meta }, { type: "task", id });
   return { runId };

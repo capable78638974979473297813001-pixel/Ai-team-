@@ -365,3 +365,24 @@ export const idempotencyKeys = pgTable(
   },
   (t) => [uniqueIndex("idempotency_keys_pk").on(t.userId, t.route, t.key)],
 );
+
+/** Outbound webhooks notified when a run finishes. */
+export const webhooks = pgTable(
+  "webhooks",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    url: text("url").notNull(),
+    /** Signing secret, AES-GCM encrypted (we need the plaintext to sign). */
+    secretEnc: text("secret_enc").notNull(),
+    events: text("events").array().notNull(),
+    disabled: boolean("disabled").notNull().default(false),
+    consecutiveFailures: integer("consecutive_failures").notNull().default(0),
+    lastStatus: text("last_status"),
+    lastDeliveryAt: timestamp("last_delivery_at", { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index("webhooks_user_idx").on(t.userId)],
+);

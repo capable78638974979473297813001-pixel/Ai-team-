@@ -1,4 +1,4 @@
-import { and, desc, eq, inArray, isNotNull, isNull, lt, or } from "drizzle-orm";
+import { and, desc, eq, inArray, isNotNull, isNull, lt, or, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import {
   agentRuns,
@@ -12,6 +12,7 @@ import {
 } from "../db/schema";
 import { env } from "../env";
 import { metrics } from "../metrics";
+import { emitWebhook } from "../services/webhooks";
 import { INSTANCE_ID } from "../instance";
 import { notifyCancel } from "./pg-coordination";
 import { log, redactString } from "../security/redact";
@@ -268,6 +269,27 @@ async function buildContext(userId: string, taskId: string, options: RunOptions)
  * Create a run for a task, post the user's message, and execute the
  * orchestrator in the background. Returns immediately with the run id.
  */
+export class RunCapacityError extends Error {
+  constructor(public limit: number) {
+    super(`You already have ${limit} team run${limit === 1 ? "" : "s"} in progress. Wait for one to finish or cancel it.`);
+  }
+}
+
+async function activeRunsFor(userId: string, q: Pick<ReturnType<typeof db>, "select"> = db()) {
+  const [row] = await q
+    .select({ n: sql<number>`count(*)::int` })
+    .from(taskRuns)
+    .innerJoin(tasks, eq(tasks.id, taskRuns.taskId))
+    .where(and(eq(tasks.userId, userId), inArray(taskRuns.status, ["queued", "running"])));
+  return row?.n ?? 0;
+}
+
+/** Fast pre-check so routes can refuse before creating anything. startRun re-checks atomically. */
+export async function assertRunCapacity(userId: string) {
+  const limit = env().MAX_CONCURRENT_RUNS;
+  if ((await activeRunsFor(userId)) >= limit) throw new RunCapacityError(limit);
+}
+
 export async function startRun(args: {
   userId: string;
   taskId: string;
@@ -276,19 +298,26 @@ export async function startRun(args: {
   limits: RunLimits;
   options: RunOptions;
 }) {
-  const [run] = await db()
-    .insert(taskRuns)
-    .values({
-      taskId: args.taskId,
-      prompt: args.prompt,
-      status: "queued",
-      limits: args.limits,
-      roster: args.roster,
-      options: args.options,
-      instanceId: INSTANCE_ID,
-      heartbeatAt: new Date(),
-    })
-    .returning();
+  const limit = env().MAX_CONCURRENT_RUNS;
+  // Check-and-insert under a per-user advisory lock so parallel requests can't exceed the limit.
+  const run = await db().transaction(async (tx) => {
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`aiteam-runs:${args.userId}`}))`);
+    if ((await activeRunsFor(args.userId, tx)) >= limit) throw new RunCapacityError(limit);
+    const [row] = await tx
+      .insert(taskRuns)
+      .values({
+        taskId: args.taskId,
+        prompt: args.prompt,
+        status: "queued",
+        limits: args.limits,
+        roster: args.roster,
+        options: args.options,
+        instanceId: INSTANCE_ID,
+        heartbeatAt: new Date(),
+      })
+      .returning();
+    return row;
+  });
   const sink = new DbRunSink(args.userId, args.taskId, run!.id);
   await sink.postMessage({ authorType: "user", kind: "task", content: args.prompt });
   await db().update(tasks).set({ status: "running", updatedAt: new Date() }).where(eq(tasks.id, args.taskId));
@@ -362,6 +391,28 @@ async function execute(
     .set({ status, updatedAt: new Date() })
     .where(eq(tasks.id, args.taskId))
     .catch(() => {});
+  await notifyFinished(args.userId, args.taskId, runId, status, stopReason, error).catch((err) => log.error("run.finished webhook failed", err));
+}
+
+async function notifyFinished(userId: string, taskId: string, runId: string, status: string, stopReason: string | null, error: string | null) {
+  const [run] = await db().select({ usage: taskRuns.usage }).from(taskRuns).where(eq(taskRuns.id, runId));
+  const [final] = await db()
+    .select()
+    .from(messages)
+    .where(and(eq(messages.taskRunId, runId), eq(messages.kind, "final")))
+    .orderBy(desc(messages.seq))
+    .limit(1);
+  emitWebhook(userId, "run.finished", {
+    taskId,
+    runId,
+    status,
+    stopReason,
+    error,
+    usage: run?.usage ?? null,
+    finalAnswer: final
+      ? { messageId: final.id, content: final.content, provider: final.provider, model: final.model, roleTitle: final.roleTitle }
+      : null,
+  });
 }
 
 /** Resolves when a background run finishes (used by tests and graceful shutdown). */

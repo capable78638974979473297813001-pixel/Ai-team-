@@ -135,6 +135,18 @@ export const openapi = {
       },
     },
     "/api/tokens/{id}": { delete: { summary: "Revoke a personal access token", ...sessionOnly, parameters: [idParam()], responses: { 200: json({}), 404: err } } },
+    "/api/webhooks": {
+      get: { summary: "List webhooks", security: [{ bearer: [] }, { session: [] }], responses: { 200: json({}) } },
+      post: {
+        summary: "Register a webhook (public HTTPS only); returns the signing secret once",
+        ...sessionOnly,
+        requestBody: { content: { "application/json": { schema: { properties: { url: { type: "string" }, events: { type: "array", items: { enum: ["run.finished"] } } }, required: ["url"] } } } },
+        responses: { 200: json({ properties: { secret: { type: "string" } } }), 400: err },
+      },
+    },
+    "/api/webhooks/{id}": { delete: { summary: "Remove a webhook", ...mutating, parameters: [idParam()], responses: { 200: json({}), 404: err } } },
+    "/api/webhooks/{id}/test": { post: { summary: "Send a signed test delivery", ...mutating, parameters: [idParam()], responses: { 200: json({}) } } },
+    "/api/account/export": { get: { summary: "Export all of your data (no credentials)", ...sessionOnly, responses: { 200: json({}) } } },
     "/api/teams/draft": {
       post: {
         summary: "Draft a team from a natural-language description (not saved)",
@@ -180,7 +192,7 @@ export const openapi = {
         ],
         responses: { 200: json({ properties: { tasks: { type: "array" }, nextCursor: { type: ["string", "null"] } } }) },
       },
-      post: { summary: "Start a task", ...mutating, parameters: [idempotencyHeader], requestBody: { content: { "application/json": { schema: ref("RunRequest") } } }, responses: { 200: json({ properties: { taskId: { type: "string" }, runId: { type: "string" } } }), 400: err } },
+      post: { summary: "Start a task", ...mutating, parameters: [idempotencyHeader], requestBody: { content: { "application/json": { schema: ref("RunRequest") } } }, responses: { 200: json({ properties: { taskId: { type: "string" }, runId: { type: "string" } } }), 400: err, 429: err } },
     },
     "/api/tasks/{id}": {
       get: { summary: "Full thread: runs, messages, agent runs, tool activity", security: [{ session: [] }], parameters: [idParam()], responses: { 200: json({ properties: { messages: { type: "array", items: ref("Message") } } }), 404: err } },

@@ -13,6 +13,8 @@ export type AuditAction =
   | "account.delete"
   | "token.create"
   | "token.revoke"
+  | "webhook.create"
+  | "webhook.delete"
   | "connection.connect"
   | "connection.connect_failed"
   | "connection.oauth_started"

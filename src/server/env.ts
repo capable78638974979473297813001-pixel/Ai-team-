@@ -8,6 +8,10 @@ const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   APP_URL: z.string().url().default("http://localhost:3000"),
   DATABASE_URL: z.string().optional(),
+  /** Runs a single user may have queued or running at once. */
+  MAX_CONCURRENT_RUNS: z.coerce.number().int().min(1).max(50).default(3),
+  /** Development only: allow webhooks to private/loopback addresses. Ignored in production. */
+  WEBHOOKS_ALLOW_PRIVATE: z.enum(["true", "false"]).default("false"),
   /** Bearer token required to scrape GET /api/metrics. Metrics are disabled when unset. */
   METRICS_TOKEN: z.string().min(16).optional(),
   /** Set to "true" only when running behind a reverse proxy that sets X-Forwarded-For. */

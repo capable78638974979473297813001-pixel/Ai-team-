@@ -104,6 +104,10 @@ All requests and responses are JSON, and every response carries an `x-request-id
 
 `POST /api/tasks` and follow-ups accept an `Idempotency-Key` header, so a retried request replays the original response instead of starting a second run. List endpoints are keyset-paginated (`?limit=&cursor=`, returning `nextCursor`).
 
+**Webhooks.** Register an HTTPS endpoint and it receives `run.finished` when a team finishes, with the status, usage and final answer. That suits integrations that don't hold an SSE connection open. Each delivery is signed with `X-AITeam-Signature: t=<unix>,v1=<hex>`, where `v1 = HMAC-SHA256(secret, "<t>.<raw body>")`. Verify it with a constant-time compare and reject stale timestamps. Deliveries retry on 5xx, 408, 429 and network errors (3 retries with backoff), and a webhook is disabled after 20 consecutive failures.
+
+**Limits.** Each user can have `MAX_CONCURRENT_RUNS` runs (default 3) queued or running at once. Further task requests get `429 too_many_runs`.
+
 **Streaming protocol.** `GET /api/tasks/:id/stream` sends a `snapshot` first. Its `agentRuns[].partialOutput` holds the text of agents that are mid-response. After that come `delta` events with an `offset`. Apply each one as `text = text.slice(0, offset) + delta.text`. The server fills any gap before sending, so reconnecting at any moment, to any instance, rebuilds the exact text. Only agent work and the final answer stream; internal plan, review and judge JSON doesn't.
 
 ```bash
@@ -147,6 +151,10 @@ curl -N -b jar localhost:3000/api/tasks/<taskId>/stream
 | GET | `/api/audit` | Your security and activity log |
 | DELETE | `/api/account` | `{password}`. Cancels runs, revokes provider grants, deletes all data. |
 | GET/POST | `/api/tokens` | List or create personal access tokens (plaintext shown once) |
+| GET/POST | `/api/webhooks` | List, or register `{url, events:["run.finished"]}`. Returns the signing secret once. |
+| DELETE | `/api/webhooks/:id` | Remove a webhook |
+| POST | `/api/webhooks/:id/test` | Send one signed test delivery |
+| GET | `/api/account/export` | Download all your data as JSON (no credentials) |
 | DELETE | `/api/tokens/:id` | Revoke a token |
 | GET | `/api/openapi.json` | OpenAPI 3.1 description of this API |
 | GET | `/api/metrics` | Prometheus metrics (requires `Authorization: Bearer $METRICS_TOKEN`) |

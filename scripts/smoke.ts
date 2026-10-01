@@ -234,6 +234,19 @@ async function main() {
   r = await call("GET", "/api/openapi.json");
   check(r.data.openapi === "3.1.0", "OpenAPI document is served");
 
+  // --- webhooks (SSRF guard), export, concurrency limit
+  r = await call("POST", "/api/webhooks", { url: "https://169.254.169.254/latest/meta-data" });
+  check(r.status === 400 && r.data.code === "unsafe_url", "webhook to a metadata/private address is refused");
+  r = await call("POST", "/api/webhooks", { url: "http://example.com/hook" });
+  check(r.status === 400, "plain-http webhook is refused");
+  r = await call("GET", "/api/account/export");
+  check(r.status === 200 && r.data.conversations.length > 0, `export returns ${r.data.conversations.length} conversations`);
+  check(!/ait_[A-Za-z0-9_-]{8}_[A-Za-z0-9_-]{20}|accessTokenEnc|tokenHash|passwordHash/.test(JSON.stringify(r.data)), "export contains no credentials");
+  const burst = [];
+  for (let i = 0; i < 4; i++) burst.push(await call("POST", "/api/tasks", { prompt: `Burst task ${i}: write a long analysis`, providers: ["openai", "anthropic"] }));
+  check(burst.some((x) => x.status === 429 && x.data.code === "too_many_runs"), `concurrent-run limit enforced (${burst.map((x) => x.status).join(",")})`);
+  for (const x of burst) if (x.data.taskId) await call("POST", `/api/tasks/${x.data.taskId}/cancel`);
+
   // --- ownership: another user can't read this task
   const mine = { cookie, csrf };
   cookie = "";

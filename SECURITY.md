@@ -76,10 +76,23 @@ An API key is a developer credential the user creates in the provider's own cons
 - `provider_events` records sanitised call metadata (kind, model, status, token usage, tool names). It never records prompts, credentials or raw responses.
 - `audit_events` records API token creation and revocation, sign-up, sign-in and failures, sign-out, session revocation, password changes, account deletion, connect and disconnect, OAuth start, invalid OAuth state, refresh failures and expiries, team and task changes, imports, settings changes, CSRF rejections and rate-limit hits. Each entry has the user, IP (per `TRUST_PROXY`) and user agent. Users can read their own log at `GET /api/audit`.
 
+## Outbound webhooks
+
+- **SSRF protection** (`security/ssrf.ts`): the URL must be `https` on port 443 or 8443, with no embedded credentials. Every address the hostname resolves to must be public. Loopback, RFC 1918, link-local (including `169.254.169.254` cloud metadata), CGNAT, multicast, reserved, documentation, IPv6 ULA and link-local, and IPv4-mapped forms of all of these are refused. The check runs when the webhook is created *and* before every delivery.
+- **DNS-rebinding protection:** the delivery connects to the exact IP that passed validation (a pinned `lookup`), with TLS SNI and certificate checks against the original hostname. Redirects aren't followed, response bodies are capped at 64KB, and each attempt times out after 10 seconds.
+- **Signatures:** each webhook has its own 256-bit secret, shown once and stored AES-GCM-encrypted. Deliveries carry `X-AITeam-Signature: t=…,v1=HMAC-SHA256(secret, t + "." + body)`.
+- **Session-only registration:** a webhook receives future task results, so registering one requires an interactive session. A leaked API token can't add an exfiltration endpoint.
+- `WEBHOOKS_ALLOW_PRIVATE=true` (for local development) is ignored in production.
+
+## Data rights
+
+`GET /api/account/export` returns every record held about the user (profile, settings, connections metadata, teams, conversations, token and webhook metadata, audit log). It never includes credentials: provider tokens, token hashes, webhook secrets and the password hash are excluded. `DELETE /api/account` erases everything.
+
 ## Agent safety
 
 - **No hidden chain-of-thought.** Agents are asked for conclusions and short justifications. We don't request or extract providers' private reasoning. The activity feed shows assignments, tool activity, summaries, findings, reviews, disagreements and rulings.
 - **Prompt injection.** Content forwarded between agents, and imported conversations, is labelled as data to evaluate rather than instructions. Model output is stored and returned as text, and clients must render it without executing HTML.
+- **Per-user concurrency:** at most `MAX_CONCURRENT_RUNS` runs (default 3) per user. The check and insert happen under a per-user Postgres advisory lock, so parallel requests can't exceed it.
 - **Bounded execution.** Every provider call passes a budget check for maximum calls, runtime and cost (where pricing is known). Rounds are capped by `maxRounds`, and a round repeats only if the judge requests it *and* the disputes changed. One call is reserved for the final synthesis. Users can cancel runs, and cancellation propagates to providers (Cursor runs are cancelled remotely).
 - **Coding agents.** Cursor only receives work when the task names a GitHub repository its key can access. `autoCreatePR` is `false` unless `allowPullRequests: true` is sent for that task.
 - **Refusals** (for example Claude's `stop_reason: "refusal"`) surface as a failed agent step, not as an empty answer.
