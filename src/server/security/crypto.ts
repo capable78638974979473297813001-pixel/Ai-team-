@@ -36,6 +36,16 @@ function loadKeyring(): Keyring {
   return keyring;
 }
 
+/** Version of the key new ciphertexts are written with. */
+export function currentKeyVersion() {
+  return loadKeyring().current;
+}
+
+/** Key version recorded in a ciphertext envelope. */
+export function envelopeKeyVersion(envelope: string) {
+  return envelope.split(".")[0] ?? "";
+}
+
 export function resetKeyring() {
   keyring = null;
 }

@@ -159,6 +159,10 @@ export interface ProviderAdapter {
   ): AsyncGenerator<StreamChunk>;
   cancel(creds: Credentials, conversation: ProviderConversation): Promise<void>;
   healthCheck(creds: Credentials): Promise<HealthResult>;
+  /** Models this credential can use, if the provider exposes a listing. */
+  listModels?(creds: Credentials): Promise<string[]>;
+  /** The adapter's preferred default among `models`. */
+  defaultModelFor(models: string[]): string | null;
 }
 
 export class AuthExpiredError extends Error {
@@ -173,7 +177,18 @@ export class ProviderError extends Error {
     public status: number | null,
     message: string,
     public retryable = false,
+    /** Server-requested wait before retrying (from Retry-After), if any. */
+    public retryAfterMs: number | null = null,
   ) {
     super(message);
   }
+}
+
+/** Parse a Retry-After header (delta-seconds or HTTP-date) into milliseconds. */
+export function parseRetryAfter(value: string | null | undefined, now = Date.now()): number | null {
+  if (!value) return null;
+  const secs = Number(value);
+  if (Number.isFinite(secs) && secs >= 0) return secs * 1000;
+  const at = Date.parse(value);
+  return Number.isNaN(at) ? null : Math.max(0, at - now);
 }

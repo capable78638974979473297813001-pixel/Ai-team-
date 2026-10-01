@@ -31,6 +31,10 @@ export abstract class BaseAdapter implements ProviderAdapter {
 
   protected abstract pickDefaultModel(models: string[]): string | null;
 
+  defaultModelFor(models: string[]) {
+    return this.pickDefaultModel(models);
+  }
+
   async disconnect(_creds: Credentials): Promise<void> {
     // API keys are revoked in the provider's own console; nothing to call.
   }

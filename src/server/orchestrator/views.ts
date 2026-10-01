@@ -20,6 +20,10 @@ export function toMessageView(m: typeof messages.$inferSelect): MessageView {
   };
 }
 
+/** Streamed text of agent runs executing in this process (authoritative for this instance). */
+const g = globalThis as unknown as { __aiteamPartials?: Map<string, string> };
+export const livePartials = (g.__aiteamPartials ??= new Map<string, string>());
+
 export function toAgentRunView(a: typeof agentRuns.$inferSelect): AgentRunView {
   return {
     id: a.id,
@@ -34,6 +38,7 @@ export function toAgentRunView(a: typeof agentRuns.$inferSelect): AgentRunView {
     status: a.status,
     summary: a.summary,
     error: a.error,
+    partialOutput: a.status === "running" ? (livePartials.get(a.id) ?? a.output ?? null) : null,
     startedAt: a.startedAt?.toISOString() ?? null,
     finishedAt: a.finishedAt?.toISOString() ?? null,
   };

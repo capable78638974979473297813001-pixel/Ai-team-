@@ -1,5 +1,6 @@
 import { inArray, and, eq } from "drizzle-orm";
-import { api, ApiError, readJson } from "@/server/auth/guard";
+import { api, ApiError, readJsonRaw } from "@/server/auth/guard";
+import { idempotent } from "@/server/services/idempotency";
 import { db } from "@/server/db/client";
 import { tasks } from "@/server/db/schema";
 import { clampLimits } from "@/server/orchestrator/budget";
@@ -8,15 +9,22 @@ import { audit } from "@/server/security/audit";
 import { RULES } from "@/server/security/rate-limit";
 import type { ProviderId } from "@/server/providers/types";
 import { runRequest } from "@/server/services/run-request";
-import { createTask, listTasks } from "@/server/services/tasks";
+import { createTask, listTasksPage } from "@/server/services/tasks";
 import { buildRoster } from "@/server/services/teams";
 import { getUserLimits } from "@/server/services/users";
 
-export const GET = api({ auth: true }, async ({ session }) => ({ tasks: await listTasks(session.user.id) }));
+/** Conversations, most recently active first. Paginate with `?limit=` and `?cursor=`. */
+export const GET = api({ auth: true }, async ({ req, session }) => {
+  const q = new URL(req.url).searchParams;
+  const limit = Math.min(100, Math.max(1, Number(q.get("limit") ?? 50) || 50));
+  return await listTasksPage(session.user.id, { limit, cursor: q.get("cursor") });
+});
 
 export const POST = api({ auth: true, rate: RULES.task, rateKey: "task" }, async ({ req, session, meta }) => {
-  const body = runRequest.parse(await readJson(req, 128 * 1024));
+  const { json, raw } = await readJsonRaw(req, 128 * 1024);
+  const body = runRequest.parse(json);
   const userId = session.user.id;
+  return idempotent(req, userId, "POST /api/tasks", raw, async () => {
   const limits = clampLimits({ ...(await getUserLimits(userId)), ...(body.limits ?? {}) } as never);
 
   if (body.contextTaskIds.length) {
@@ -57,4 +65,5 @@ export const POST = api({ auth: true, rate: RULES.task, rateKey: "task" }, async
   });
   await audit("task.create", { userId, ...meta }, { type: "task", id: task.id }, { agents: roster.map((r) => r.provider) });
   return { taskId: task.id, runId };
+  });
 });

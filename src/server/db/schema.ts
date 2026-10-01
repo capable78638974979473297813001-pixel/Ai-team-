@@ -323,3 +323,45 @@ export const rateLimits = pgTable("rate_limits", {
   allowed: boolean("allowed").notNull().default(true),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * Personal access tokens for programmatic API clients (`Authorization: Bearer ait_…`).
+ * Only the SHA-256 of the token is stored.
+ */
+export const apiTokens = pgTable(
+  "api_tokens",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    name: text("name").notNull(),
+    tokenHash: text("token_hash").notNull().unique(),
+    /** First characters of the token, shown so users can tell tokens apart. */
+    prefix: text("prefix").notNull(),
+    /** read | write */
+    scopes: text("scopes").array().notNull(),
+    createdAt: createdAt(),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+  },
+  (t) => [index("api_tokens_user_idx").on(t.userId)],
+);
+
+/** Replay protection for POSTs that carry an Idempotency-Key header. */
+export const idempotencyKeys = pgTable(
+  "idempotency_keys",
+  {
+    userId: uuid("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    key: text("key").notNull(),
+    route: text("route").notNull(),
+    /** SHA-256 of the request body, so a reused key with a different body is rejected. */
+    requestHash: text("request_hash").notNull(),
+    status: integer("status"),
+    response: jsonb("response").$type<unknown>(),
+    createdAt: createdAt(),
+  },
+  (t) => [uniqueIndex("idempotency_keys_pk").on(t.userId, t.route, t.key)],
+);

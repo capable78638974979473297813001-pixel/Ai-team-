@@ -14,7 +14,14 @@ export function sessionCookieName() {
 }
 
 export type SessionUser = { id: string; email: string; name: string };
-export type CurrentSession = { id: string; user: SessionUser };
+export type CurrentSession = {
+  /** Session hash for cookie sessions; `token:<id>` for personal access tokens. */
+  id: string;
+  kind: "cookie" | "token";
+  scopes: ("read" | "write")[];
+  tokenId?: string;
+  user: SessionUser;
+};
 
 export async function createSession(userId: string, meta: { ip?: string | null; userAgent?: string | null }) {
   const token = randomToken(32);
@@ -57,7 +64,7 @@ export async function lookupSession(token: string | null): Promise<CurrentSessio
   if (Date.now() - row.lastSeenAt.getTime() > TOUCH_INTERVAL_MS) {
     await db().update(sessions).set({ lastSeenAt: new Date() }).where(eq(sessions.id, id));
   }
-  return { id: row.id, user: row.user };
+  return { id: row.id, kind: "cookie", scopes: ["read", "write"], user: row.user };
 }
 
 export async function getSession(): Promise<CurrentSession | null> {

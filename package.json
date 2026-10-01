@@ -14,7 +14,8 @@
     "setup": "node scripts/setup-env.mjs",
     "smoke": "tsx scripts/smoke.ts",
     "check:multi-instance": "tsx scripts/multi-instance.ts",
-    "check:shutdown": "node --env-file-if-exists=.env.local scripts/shutdown-check.mjs"
+    "check:shutdown": "node --env-file-if-exists=.env.local scripts/shutdown-check.mjs",
+    "keys:rotate": "tsx --env-file-if-exists=.env.local scripts/rotate-keys.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.130.0",

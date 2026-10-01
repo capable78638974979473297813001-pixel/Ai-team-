@@ -7,6 +7,7 @@ import { INSTANCE_ID } from "./instance";
 import { startPgCoordination, stopPgCoordination } from "./orchestrator/pg-coordination";
 import { cancelRun, reapOrphanedRuns, shutdownRuns } from "./orchestrator/runner";
 import { pruneRateLimits } from "./security/rate-limit";
+import { pruneIdempotencyKeys } from "./services/idempotency";
 import { log } from "./security/redact";
 
 const MAINTENANCE_MS = 10 * 60_000;
@@ -17,6 +18,7 @@ export async function maintenance() {
   await pruneExpiredSessions();
   await db().delete(oauthStates).where(lt(oauthStates.expiresAt, new Date()));
   await pruneRateLimits();
+  await pruneIdempotencyKeys();
   const reaped = await reapOrphanedRuns();
   if (reaped) log.info(`marked ${reaped} orphaned run(s) as interrupted`);
 }

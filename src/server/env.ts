@@ -8,6 +8,8 @@ const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   APP_URL: z.string().url().default("http://localhost:3000"),
   DATABASE_URL: z.string().optional(),
+  /** Bearer token required to scrape GET /api/metrics. Metrics are disabled when unset. */
+  METRICS_TOKEN: z.string().min(16).optional(),
   /** Set to "true" only when running behind a reverse proxy that sets X-Forwarded-For. */
   TRUST_PROXY: z.enum(["true", "false"]).default("false"),
 

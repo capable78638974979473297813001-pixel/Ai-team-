@@ -3,6 +3,7 @@ import { BaseAdapter, rankModels } from "./base";
 import { providerFetch } from "./http";
 import {
   AuthExpiredError,
+  parseRetryAfter,
   ProviderError,
   type Capability,
   type ConnectInput,
@@ -74,12 +75,17 @@ export class AnthropicProvider extends BaseAdapter {
       authToken: null,
       baseURL: ANTHROPIC_API,
       fetch: (url, init) => providerFetch(url as string, init as RequestInit),
-      maxRetries: 2,
+      // The orchestrator owns retries so every attempt is counted against the run budget.
+      maxRetries: 0,
       timeout: 10 * 60_000,
     });
   }
 
-  private async listModels(apiKey: string): Promise<string[]> {
+  async listModels(creds: Credentials) {
+    return this.listModelIds(creds.accessToken);
+  }
+
+  private async listModelIds(apiKey: string): Promise<string[]> {
     const ids: string[] = [];
     try {
       for await (const m of this.client(apiKey).models.list({ limit: 100 })) ids.push(m.id);
@@ -93,7 +99,7 @@ export class AnthropicProvider extends BaseAdapter {
     if (input.method !== "api_key") {
       throw new Error("Anthropic does not allow third-party apps to use Claude subscriptions");
     }
-    const models = await this.listModels(input.apiKey);
+    const models = await this.listModelIds(input.apiKey);
     return {
       kind: "connected",
       credentials: { method: "api_key", accessToken: input.apiKey, scopes: [], extra: {} },
@@ -108,7 +114,7 @@ export class AnthropicProvider extends BaseAdapter {
 
   async healthCheck(creds: Credentials): Promise<HealthResult> {
     try {
-      await this.listModels(creds.accessToken);
+      await this.listModelIds(creds.accessToken);
       return { ok: true };
     } catch (err) {
       if (err instanceof AuthExpiredError) return { ok: false, expired: true, detail: err.message };
@@ -210,10 +216,18 @@ function mapError(err: unknown): Error {
   if (err instanceof Anthropic.AuthenticationError || err instanceof Anthropic.PermissionDeniedError) {
     return new AuthExpiredError("Claude API key was rejected");
   }
-  if (err instanceof Anthropic.RateLimitError) return new ProviderError("Anthropic", 429, "Claude API rate limit reached", true);
+  if (err instanceof Anthropic.RateLimitError) {
+    return new ProviderError("Anthropic", 429, "Claude API rate limit reached", true, parseRetryAfter(err.headers?.get("retry-after")));
+  }
   if (err instanceof Anthropic.APIError) {
     const status = typeof err.status === "number" ? err.status : null;
-    return new ProviderError("Anthropic", status, `Claude API error${status ? ` ${status}` : ""}: ${err.message}`, (status ?? 0) >= 500);
+    return new ProviderError(
+      "Anthropic",
+      status,
+      `Claude API error${status ? ` ${status}` : ""}: ${err.message}`,
+      (status ?? 0) >= 500 || status === 529,
+      parseRetryAfter(err.headers?.get("retry-after")),
+    );
   }
   if (err instanceof Error && err.name === "AbortError") return err;
   return err instanceof Error ? err : new Error(String(err));

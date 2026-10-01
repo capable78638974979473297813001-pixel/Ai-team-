@@ -33,13 +33,13 @@ describe.skipIf(!url)("Postgres cross-instance coordination", () => {
   it("delivers events published by another instance to local subscribers, but not our own echoes", async () => {
     const got: RunEvent[] = [];
     const off = bus.subscribe("task-1", (e) => got.push(e));
-    const event: RunEvent = { type: "delta", taskId: "task-1", agentRunId: "ar", text: "hello" };
+    const event: RunEvent = { type: "delta", taskId: "task-1", agentRunId: "ar", text: "hello", offset: 0 };
     await other.notify("aiteam_events", JSON.stringify({ o: "instance-B", t: "task-1", e: event }));
     await waitFor(() => got.length > 0);
     expect(got).toEqual([event]);
 
     // Our own publish is delivered locally once, and the NOTIFY echo is ignored.
-    bus.publish({ type: "delta", taskId: "task-1", agentRunId: "ar", text: "mine" });
+    bus.publish({ type: "delta", taskId: "task-1", agentRunId: "ar", text: "mine", offset: 5 });
     await new Promise((r) => setTimeout(r, 200));
     expect(got.filter((e) => e.type === "delta" && e.text === "mine")).toHaveLength(1);
     off();

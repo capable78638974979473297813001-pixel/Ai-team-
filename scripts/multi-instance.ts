@@ -80,6 +80,28 @@ async function main() {
   check(deltas > 0, `B streamed ${deltas} live deltas from a run executing on A`);
   check(finalSeen && status === "completed", "B received the final answer and completion");
 
+  // Watch on A, drop the stream mid-answer, resume on B (snapshot from the DB + offset deltas via NOTIFY).
+  r = await call(A, "POST", "/api/tasks", { prompt: "Explain eventual consistency.", providers: ["anthropic", "openai"] });
+  const t3 = r.data.taskId;
+  let target = "";
+  await stream(A, t3, (ev, data) => {
+    if (ev === "delta" && data.offset > 40) {
+      target = data.agentRunId;
+      return true;
+    }
+    return false;
+  });
+  let text = "";
+  await stream(B, t3, (ev, data) => {
+    if (ev === "snapshot") text = data.agentRuns.find((a: any) => a.id === target)?.partialOutput ?? "";
+    if (ev === "delta" && data.agentRunId === target) text = text.slice(0, data.offset) + data.text;
+    return ev === "agent" && data.agentRun.id === target && data.agentRun.status !== "running";
+  });
+  await stream(B, t3, (ev, data) => (ev === "snapshot" && data.task.status !== "running") || (ev === "run" && data.run.status !== "running"));
+  r = await call(B, "GET", `/api/tasks/${t3}`);
+  const stored = r.data.messages.find((m: any) => m.agentRunId === target)?.content;
+  check(text.length > 0 && text === stored, `resumed on B mid-answer and rebuilt ${text.length} chars exactly`);
+
   // Start on A, cancel via B.
   r = await call(A, "POST", "/api/tasks", { prompt: "Write an exhaustive report." });
   const t2 = r.data.taskId;

@@ -29,6 +29,9 @@ export const POST = api<true, P>({ auth: true, rate: RULES.connect, rateKey: "co
   const ctx = { userId: session.user.id, ...meta };
 
   if (body.method === "oauth") {
+    if (session.kind !== "cookie") {
+      throw new ApiError(403, "Provider sign-in must be started from an interactive session", "session_required");
+    }
     try {
       const url = await beginOAuth({ userId: session.user.id, sessionId: session.id, provider: id, fields: body.fields });
       await audit("connection.oauth_started", ctx, { type: "provider", id });

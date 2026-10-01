@@ -77,6 +77,10 @@ docker run -p 3000:3000 --env-file .env ai-team
 # or: docker compose up   (Postgres + migrations + app)
 ```
 
+**Observability.** In production, logs are one JSON object per line: an access line per request (request ID, route, status, latency, user) plus redacted application events. Set `LOG_FORMAT=text` to opt out. `GET /api/metrics` exposes request counts and latency, provider calls, latency and tokens by provider and outcome, finished runs by status, and active runs.
+
+**Encryption key rotation.** Prepend a new key (`ENCRYPTION_KEYS="v2:<new>,v1:<old>"`), deploy, run `npm run keys:rotate`, then remove `v1` once a re-run reports `rotated=0`.
+
 The image is a Next.js standalone build running as a non-root user, with a health check on `/api/health`. On `SIGTERM` the server stops accepting work, cancels in-flight runs (they are marked "interrupted" so the user can retry), and closes its database listeners.
 
 **Running several instances.** In production, `EVENT_BUS` and `RATE_LIMIT_STORE` default to `postgres`:
@@ -93,7 +97,14 @@ Configuration is listed in [.env.example](./.env.example).
 
 ## API
 
-All requests and responses are JSON. Every state-changing request must send an `Origin` header equal to `APP_URL` and an `x-csrf-token` header (except login and signup). The session is a cookie.
+All requests and responses are JSON, and every response carries an `x-request-id`. There are two ways to authenticate:
+
+- **Personal access tokens** for programs: `Authorization: Bearer ait_…`. Create them from a signed-in session with `POST /api/tokens`. Scopes are `read` or `write`. Bearer requests need no CSRF token or Origin header. Sensitive account actions (token management, password, account deletion, provider OAuth) refuse tokens.
+- **Session cookies**: every state-changing request must also send an `Origin` header equal to `APP_URL` and an `x-csrf-token` header (except login and signup).
+
+`POST /api/tasks` and follow-ups accept an `Idempotency-Key` header, so a retried request replays the original response instead of starting a second run. List endpoints are keyset-paginated (`?limit=&cursor=`, returning `nextCursor`).
+
+**Streaming protocol.** `GET /api/tasks/:id/stream` sends a `snapshot` first. Its `agentRuns[].partialOutput` holds the text of agents that are mid-response. After that come `delta` events with an `offset`. Apply each one as `text = text.slice(0, offset) + delta.text`. The server fills any gap before sending, so reconnecting at any moment, to any instance, rebuilds the exact text. Only agent work and the final answer stream; internal plan, review and judge JSON doesn't.
 
 ```bash
 H='-H content-type:application/json -H origin:http://localhost:3000'
@@ -109,6 +120,14 @@ curl -b jar $H -H "x-csrf-token: $CSRF" -d '{"method":"api_key","apiKey":"sk-ant
 
 # Or start OAuth: open the returned URL in a browser. The provider redirects to /api/oauth/google/callback.
 curl -b jar $H -H "x-csrf-token: $CSRF" -d '{"method":"oauth","fields":{"quotaProject":"my-gcp-project"}}' localhost:3000/api/connections/google
+
+# For scripts and servers, mint a token once and use it as a Bearer credential
+curl -b jar $H -H "x-csrf-token: $CSRF" -d '{"name":"my-script","scopes":["read","write"]}' localhost:3000/api/tokens
+TOKEN=ait_...
+curl -H "authorization: Bearer $TOKEN" localhost:3000/api/connections
+
+# Describe a team in plain language and get a proposed roster
+curl -H "authorization: Bearer $TOKEN" -H content-type:application/json -d '{"description":"A team to audit our checkout API for security bugs"}' localhost:3000/api/teams/draft
 
 # Give the team a task (auto-selects agents, or pass "teamId" or "providers")
 curl -b jar $H -H "x-csrf-token: $CSRF" -d '{"prompt":"Is https://github.com/org/repo production ready?","repoUrl":"https://github.com/org/repo"}' localhost:3000/api/tasks
@@ -127,7 +146,10 @@ curl -N -b jar localhost:3000/api/tasks/<taskId>/stream
 | POST | `/api/auth/password` | `{currentPassword, newPassword}`. Signs out every other session. |
 | GET | `/api/audit` | Your security and activity log |
 | DELETE | `/api/account` | `{password}`. Cancels runs, revokes provider grants, deletes all data. |
+| GET/POST | `/api/tokens` | List or create personal access tokens (plaintext shown once) |
+| DELETE | `/api/tokens/:id` | Revoke a token |
 | GET | `/api/openapi.json` | OpenAPI 3.1 description of this API |
+| GET | `/api/metrics` | Prometheus metrics (requires `Authorization: Bearer $METRICS_TOKEN`) |
 | GET | `/api/providers` | Providers, connection methods (availability, billing) and capabilities |
 | GET | `/api/connections` | Your connection states: `connected`, `not_connected`, `unsupported`, `coming_soon`, `expired` |
 | POST | `/api/connections/:provider` | `{method:"api_key", apiKey}`, `{method:"oauth", fields}` (returns `{redirect}`), or `{method:"sandbox"}` |
@@ -137,6 +159,7 @@ curl -N -b jar localhost:3000/api/tasks/<taskId>/stream
 | GET | `/api/oauth/:provider/callback` | OAuth redirect target |
 | GET/POST | `/api/teams` | List, or create `{name, description, agents:[{provider, roleTitle, roleInstructions, model?, isLead?}]}` |
 | PUT/DELETE | `/api/teams/:id` | Update or delete a team |
+| POST | `/api/teams/draft` | `{description}`. A connected model proposes roles (deterministic fallback). Not saved. |
 | GET/POST | `/api/tasks` | List conversations, or start a task `{prompt, teamId?, providers?, repoUrl?, allowPullRequests?, contextTaskIds?, limits?}` |
 | GET/PATCH/DELETE | `/api/tasks/:id` | Full thread (runs, messages, agent runs, tool activity), rename, delete |
 | POST | `/api/tasks/:id/runs` | Follow-up message in the same conversation |

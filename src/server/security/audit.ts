@@ -11,6 +11,8 @@ export type AuditAction =
   | "auth.password_change"
   | "auth.session_revoke"
   | "account.delete"
+  | "token.create"
+  | "token.revoke"
   | "connection.connect"
   | "connection.connect_failed"
   | "connection.oauth_started"

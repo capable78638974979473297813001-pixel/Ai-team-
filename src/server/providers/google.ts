@@ -103,7 +103,7 @@ export class GoogleProvider extends BaseAdapter {
     };
   }
 
-  private async listModels(creds: Pick<Credentials, "method" | "accessToken" | "extra">): Promise<string[]> {
+  async listModels(creds: Pick<Credentials, "method" | "accessToken" | "extra">): Promise<string[]> {
     const body = await fetchJson<{ models?: { name: string; supportedGenerationMethods?: string[] }[] }>(
       "Gemini",
       `${GEMINI_API}/models?pageSize=200`,

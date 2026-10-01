@@ -4,7 +4,7 @@ import { audit } from "@/server/security/audit";
 import { RULES } from "@/server/security/rate-limit";
 import { changePassword } from "@/server/services/account";
 
-export const POST = api({ auth: true, rate: RULES.auth, rateKey: "auth" }, async ({ req, session, meta }) => {
+export const POST = api({ auth: true, sessionOnly: true, rate: RULES.auth, rateKey: "auth" }, async ({ req, session, meta }) => {
   const body = z
     .object({ currentPassword: z.string().min(1).max(200), newPassword: z.string().min(10, "Use at least 10 characters").max(200) })
     .parse(await readJson(req));

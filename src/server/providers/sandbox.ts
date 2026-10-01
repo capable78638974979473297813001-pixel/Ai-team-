@@ -195,6 +195,21 @@ function respond(kind: string, name: string, system: string, message: string): s
         "- Connect real providers to replace the simulated analysis.",
       ].join("\n");
     }
+    case "team": {
+      const purpose = message.match(/purpose:\n([^\n]+)/)?.[1] ?? "the task";
+      const ids = [...message.matchAll(/^- "([a-z]+)": ([^ ]+)/gm)].map((m) => ({ id: m[1]!, name: m[2]! })).filter((p) => p.id !== "cursor");
+      const roles = ["Lead", "Specialist", "Reviewer", "Researcher"];
+      return JSON.stringify({
+        name: `Team for ${purpose.slice(0, 40)}`,
+        description: purpose,
+        agents: ids.slice(0, 4).map((p, i) => ({
+          provider: p.id,
+          roleTitle: roles[i],
+          roleInstructions: `${roles[i]} for: ${purpose}`,
+          isLead: i === 0,
+        })),
+      });
+    }
     default:
       return `SUMMARY: Simulated response from ${name}.\nFINDINGS:\n- [F1] No real provider is connected.`;
   }

@@ -11,6 +11,7 @@ import {
   type RunOptions,
 } from "../db/schema";
 import { env } from "../env";
+import { metrics } from "../metrics";
 import { INSTANCE_ID } from "../instance";
 import { notifyCancel } from "./pg-coordination";
 import { log, redactString } from "../security/redact";
@@ -20,13 +21,17 @@ import { getActiveConnection, markExpired } from "../services/connections";
 import { loadPricing, type Budget } from "./budget";
 import { CancelledError, Orchestrator, type EngineAgent, type RunSink } from "./engine";
 import { bus } from "./events";
-import { toAgentRunView, toMessageView, toRunView } from "./views";
+import { livePartials, toAgentRunView, toMessageView, toRunView } from "./views";
 
 export { toAgentRunView, toMessageView, toRunView };
 
 type Active = { controller: AbortController; taskId: string; done?: Promise<void> };
 const g = globalThis as unknown as { __aiteamActive?: Map<string, Active> };
 const active = (g.__aiteamActive ??= new Map<string, Active>());
+
+export function activeRunCount() {
+  return active.size;
+}
 
 export function isRunActive(runId: string) {
   return active.has(runId);
@@ -114,6 +119,11 @@ export class DbRunSink implements RunSink {
 
   async updateAgentRun(id: string, patch: Parameters<RunSink["updateAgentRun"]>[1]) {
     const terminal = patch.status && ["completed", "failed", "cancelled"].includes(patch.status);
+    if (terminal) {
+      clearTimeout(this.flushTimers.get(id));
+      this.flushTimers.delete(id);
+      livePartials.delete(id);
+    }
     const [row] = await db()
       .update(agentRuns)
       .set({
@@ -138,8 +148,28 @@ export class DbRunSink implements RunSink {
     }
   }
 
+  private flushTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
   delta(agentRunId: string, text: string) {
-    bus.publish({ type: "delta", taskId: this.taskId, agentRunId, text });
+    const before = livePartials.get(agentRunId) ?? "";
+    livePartials.set(agentRunId, before + text);
+    bus.publish({ type: "delta", taskId: this.taskId, agentRunId, text, offset: before.length });
+    // Persist partial text periodically so reconnecting clients on *other* instances can resume.
+    if (!this.flushTimers.has(agentRunId)) {
+      this.flushTimers.set(
+        agentRunId,
+        setTimeout(() => {
+          this.flushTimers.delete(agentRunId);
+          const partial = livePartials.get(agentRunId);
+          if (partial === undefined) return;
+          void db()
+            .update(agentRuns)
+            .set({ output: partial })
+            .where(and(eq(agentRuns.id, agentRunId), eq(agentRuns.status, "running")))
+            .catch(() => {});
+        }, 750),
+      );
+    }
   }
 
   async tool(agentRunId: string, agent: EngineAgent, name: string, status: string, detail?: string) {
@@ -320,6 +350,7 @@ async function execute(
       await sink.postMessage({ authorType: "system", kind: "status", content: `The run failed: ${error}` }).catch(() => {});
     }
   }
+  metrics.runs.inc({ status });
   await sink.setRun({ status, phase: "done", stopReason, error }).catch(() => {});
   await db()
     .update(taskRuns)

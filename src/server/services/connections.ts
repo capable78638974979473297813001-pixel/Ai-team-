@@ -246,11 +246,26 @@ export async function checkHealth(userId: string, provider: ProviderId) {
   const conn = await getActiveConnection(userId, provider);
   if (!conn) return { ok: false, expired: true };
   const result = await conn.adapter.healthCheck(conn.credentials);
-  if (result.expired) await markExpired(userId, provider, result.detail ?? "Rejected by provider");
-  else
-    await db()
-      .update(providerConnections)
-      .set({ lastHealthAt: new Date(), lastError: result.ok ? null : (result.detail ?? null) })
-      .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, provider)));
-  return result;
+  if (result.expired) {
+    await markExpired(userId, provider, result.detail ?? "Rejected by provider");
+    return result;
+  }
+  // Providers add and retire models; refresh the list and keep the default valid.
+  let modelPatch: { models?: string[]; defaultModel?: string | null } = {};
+  if (result.ok && conn.adapter.listModels && !conn.simulated) {
+    try {
+      const models = await conn.adapter.listModels(conn.credentials);
+      if (models.length) {
+        const keep = conn.defaultModel && models.includes(conn.defaultModel);
+        modelPatch = { models, defaultModel: keep ? conn.defaultModel : conn.adapter.defaultModelFor(models) };
+      }
+    } catch {
+      /* the health check itself passed; keep the old list */
+    }
+  }
+  await db()
+    .update(providerConnections)
+    .set({ lastHealthAt: new Date(), lastError: result.ok ? null : (result.detail ?? null), ...modelPatch, updatedAt: new Date() })
+    .where(and(eq(providerConnections.userId, userId), eq(providerConnections.provider, provider)));
+  return { ...result, models: modelPatch.models, defaultModel: modelPatch.defaultModel };
 }

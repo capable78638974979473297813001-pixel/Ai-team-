@@ -31,6 +31,8 @@ export type AgentRunView = {
   status: string;
   summary: string | null;
   error: string | null;
+  /** Text streamed so far while the agent is running (null otherwise). */
+  partialOutput: string | null;
   startedAt: string | null;
   finishedAt: string | null;
 };
@@ -50,7 +52,12 @@ export type RunEvent =
   | { type: "run"; taskId: string; run: RunView }
   | { type: "message"; taskId: string; message: MessageView }
   | { type: "agent"; taskId: string; agentRun: AgentRunView }
-  | { type: "delta"; taskId: string; agentRunId: string; text: string }
+  /**
+   * `offset` is the length of this agent run's streamed text before `text`.
+   * Clients apply `partial = partial.slice(0, offset) + text`, which makes
+   * replayed or overlapping deltas after a reconnect harmless.
+   */
+  | { type: "delta"; taskId: string; agentRunId: string; text: string; offset: number }
   | { type: "tool"; taskId: string; agentRunId: string; name: string; status: string; detail?: string };
 
 type Listener = (e: RunEvent) => void;

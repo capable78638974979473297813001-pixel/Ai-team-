@@ -60,7 +60,11 @@ export class XAIProvider extends BaseAdapter {
     return rankModels(models, [/^grok-\d+(\.\d+)?$/, /^grok-\d/], /image|vision|imagine|mini|embed|fast/i);
   }
 
-  private async listModels(token: string) {
+  async listModels(creds: Credentials) {
+    return this.listModelIds(creds.accessToken);
+  }
+
+  private async listModelIds(token: string) {
     const body = await fetchJson<{ data: { id: string }[] }>("xAI", `${XAI_API}/models`, {
       headers: { authorization: `Bearer ${token}` },
       timeoutMs: 15_000,
@@ -70,7 +74,7 @@ export class XAIProvider extends BaseAdapter {
 
   async connect(input: ConnectInput): Promise<ConnectOutcome> {
     if (input.method !== "api_key") throw new Error("xAI subscription sign-in is not available yet");
-    const models = await this.listModels(input.apiKey);
+    const models = await this.listModelIds(input.apiKey);
     let info: Record<string, unknown> = { keySuffix: input.apiKey.slice(-4) };
     try {
       const key = await fetchJson<{ name?: string; team_id?: string }>("xAI", `${XAI_API}/api-key`, {
@@ -90,7 +94,7 @@ export class XAIProvider extends BaseAdapter {
 
   async healthCheck(creds: Credentials): Promise<HealthResult> {
     try {
-      await this.listModels(creds.accessToken);
+      await this.listModelIds(creds.accessToken);
       return { ok: true };
     } catch (err) {
       if (err instanceof AuthExpiredError) return { ok: false, expired: true, detail: err.message };

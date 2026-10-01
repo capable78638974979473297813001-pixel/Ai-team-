@@ -3,19 +3,30 @@ const json = (schema: object, description = "OK") => ({ description, content: { 
 const ref = (name: string) => ({ $ref: `#/components/schemas/${name}` });
 const err = { description: "Error", content: { "application/json": { schema: ref("Error") } } };
 const idParam = (name = "id") => ({ name, in: "path", required: true, schema: { type: "string" } });
-const mutating = { security: [{ session: [], csrf: [] }] };
+const mutating = { security: [{ bearer: [] }, { session: [], csrf: [] }] };
+const sessionOnly = { security: [{ session: [], csrf: [] }], description: "Requires an interactive cookie session; API tokens are refused." };
+const idempotencyHeader = {
+  name: "Idempotency-Key",
+  in: "header",
+  required: false,
+  schema: { type: "string", minLength: 8, maxLength: 100 },
+  description: "Retries with the same key and body replay the original response (24h).",
+};
 
 export const openapi = {
   openapi: "3.1.0",
   info: {
     title: "AI Team API",
-    version: "0.2.0",
+    version: "0.3.0",
     description:
       "Your AI accounts. One team. Connect AI providers with their official auth methods and run multi-agent tasks. " +
-      "State-changing requests require an Origin header equal to APP_URL and an x-csrf-token header (obtained from login/signup/session).",
+      "Authenticate with a personal access token (`Authorization: Bearer ait_…`) or a session cookie. " +
+      "Cookie-authenticated state-changing requests also need an Origin header equal to APP_URL and an x-csrf-token header. " +
+      "Every response carries x-request-id.",
   },
   components: {
     securitySchemes: {
+      bearer: { type: "http", scheme: "bearer", description: "Personal access token from POST /api/tokens (scopes: read, write)" },
       session: { type: "apiKey", in: "cookie", name: "__Host-aiteam_session" },
       csrf: { type: "apiKey", in: "header", name: "x-csrf-token" },
     },
@@ -111,12 +122,30 @@ export const openapi = {
     "/api/auth/signup": { post: { summary: "Create an account and session", responses: { 200: json({ properties: { user: ref("User"), csrfToken: { type: "string" } } }), 409: err } } },
     "/api/auth/login": { post: { summary: "Sign in", responses: { 200: json({ properties: { user: ref("User"), csrfToken: { type: "string" } } }), 401: err } } },
     "/api/auth/session": { get: { summary: "Current user and CSRF token", security: [{ session: [] }], responses: { 200: json({}), 401: err } } },
-    "/api/auth/logout": { post: { summary: "End this session", ...mutating, responses: { 200: json({}) } } },
-    "/api/auth/logout-all": { post: { summary: "End every session", ...mutating, responses: { 200: json({}) } } },
+    "/api/auth/logout": { post: { summary: "End this session", ...sessionOnly, responses: { 200: json({}) } } },
+    "/api/auth/logout-all": { post: { summary: "End every session", ...sessionOnly, responses: { 200: json({}) } } },
     "/api/auth/sessions": { get: { summary: "List sessions", security: [{ session: [] }], responses: { 200: json({}) } } },
-    "/api/auth/sessions/{id}": { delete: { summary: "Revoke a session", ...mutating, parameters: [idParam()], responses: { 200: json({}), 404: err } } },
-    "/api/auth/password": { post: { summary: "Change password (signs out other sessions)", ...mutating, responses: { 200: json({}), 401: err } } },
-    "/api/account": { delete: { summary: "Delete the account (requires password)", ...mutating, responses: { 200: json({}), 401: err } } },
+    "/api/tokens": {
+      get: { summary: "List personal access tokens", ...sessionOnly, responses: { 200: json({}) } },
+      post: {
+        summary: "Create a personal access token (plaintext returned once)",
+        ...sessionOnly,
+        requestBody: { content: { "application/json": { schema: { properties: { name: { type: "string" }, scopes: { type: "array", items: { enum: ["read", "write"] } }, expiresInDays: { type: ["integer", "null"] } } } } } },
+        responses: { 200: json({ properties: { token: { type: "string" } } }) },
+      },
+    },
+    "/api/tokens/{id}": { delete: { summary: "Revoke a personal access token", ...sessionOnly, parameters: [idParam()], responses: { 200: json({}), 404: err } } },
+    "/api/teams/draft": {
+      post: {
+        summary: "Draft a team from a natural-language description (not saved)",
+        ...mutating,
+        requestBody: { content: { "application/json": { schema: { properties: { description: { type: "string" } }, required: ["description"] } } } },
+        responses: { 200: json({ properties: { team: ref("TeamInput"), draftedBy: { type: ["string", "null"] } } }) },
+      },
+    },
+    "/api/auth/sessions/{id}": { delete: { summary: "Revoke a session", ...sessionOnly, parameters: [idParam()], responses: { 200: json({}), 404: err } } },
+    "/api/auth/password": { post: { summary: "Change password (signs out other sessions)", ...sessionOnly, responses: { 200: json({}), 401: err } } },
+    "/api/account": { delete: { summary: "Delete the account (requires password)", ...sessionOnly, responses: { 200: json({}), 401: err } } },
     "/api/audit": { get: { summary: "Your security/activity log", security: [{ session: [] }], responses: { 200: json({}) } } },
     "/api/providers": { get: { summary: "Supported providers, connection methods and capabilities", responses: { 200: json({}) } } },
     "/api/connections": { get: { summary: "Your connections", security: [{ session: [] }], responses: { 200: json({ properties: { connections: { type: "array", items: ref("Connection") } } }) } } },
@@ -142,19 +171,30 @@ export const openapi = {
       delete: { summary: "Delete a team", ...mutating, parameters: [idParam()], responses: { 200: json({}) } },
     },
     "/api/tasks": {
-      get: { summary: "List conversations", security: [{ session: [] }], responses: { 200: json({}) } },
-      post: { summary: "Start a task", ...mutating, requestBody: { content: { "application/json": { schema: ref("RunRequest") } } }, responses: { 200: json({ properties: { taskId: { type: "string" }, runId: { type: "string" } } }), 400: err } },
+      get: {
+        summary: "List conversations (keyset-paginated)",
+        security: [{ bearer: [] }, { session: [] }],
+        parameters: [
+          { name: "limit", in: "query", schema: { type: "integer", minimum: 1, maximum: 100 } },
+          { name: "cursor", in: "query", schema: { type: "string" } },
+        ],
+        responses: { 200: json({ properties: { tasks: { type: "array" }, nextCursor: { type: ["string", "null"] } } }) },
+      },
+      post: { summary: "Start a task", ...mutating, parameters: [idempotencyHeader], requestBody: { content: { "application/json": { schema: ref("RunRequest") } } }, responses: { 200: json({ properties: { taskId: { type: "string" }, runId: { type: "string" } } }), 400: err } },
     },
     "/api/tasks/{id}": {
       get: { summary: "Full thread: runs, messages, agent runs, tool activity", security: [{ session: [] }], parameters: [idParam()], responses: { 200: json({ properties: { messages: { type: "array", items: ref("Message") } } }), 404: err } },
       patch: { summary: "Rename", ...mutating, parameters: [idParam()], responses: { 200: json({}) } },
       delete: { summary: "Delete", ...mutating, parameters: [idParam()], responses: { 200: json({}) } },
     },
-    "/api/tasks/{id}/runs": { post: { summary: "Follow-up message in the same conversation", ...mutating, parameters: [idParam()], requestBody: { content: { "application/json": { schema: ref("RunRequest") } } }, responses: { 200: json({}), 409: err } } },
+    "/api/tasks/{id}/runs": { post: { summary: "Follow-up message in the same conversation", ...mutating, parameters: [idParam(), idempotencyHeader], requestBody: { content: { "application/json": { schema: ref("RunRequest") } } }, responses: { 200: json({}), 409: err } } },
     "/api/tasks/{id}/cancel": { post: { summary: "Stop the team (works across instances)", ...mutating, parameters: [idParam()], responses: { 200: json({}) } } },
     "/api/tasks/{id}/stream": {
       get: {
         summary: "Server-Sent Events: snapshot, then run / message / agent / delta / tool events",
+        description:
+          "Snapshot agentRuns include partialOutput for agents mid-response. Apply deltas as text = text.slice(0, offset) + delta.text; " +
+          "the server fills any gap before sending, so a reconnect (to any instance) rebuilds the exact text.",
         security: [{ session: [] }],
         parameters: [idParam()],
         responses: { 200: { description: "text/event-stream", content: { "text/event-stream": { schema: { type: "string" } } } } },

@@ -1,6 +1,7 @@
 import type { Finding, RunLimits } from "../db/schema";
 import { AuthExpiredError, ProviderError, type ProviderConversation } from "../providers/types";
 import type { ActiveConnection } from "../services/connections";
+import { metrics } from "../metrics";
 import { Budget } from "./budget";
 import type { MessageView } from "./events";
 import {
@@ -92,6 +93,24 @@ type WorkItem = {
 type ReviewRecord = { item: WorkItem; reviewer: EngineAgent; review: Review; messageId: string };
 
 const SYNTHESIS_RESERVE = 1;
+/** Attempts per provider call for transient failures (429, 5xx, timeouts). */
+const MAX_ATTEMPTS = 3;
+const MAX_RETRY_WAIT_MS = 20_000;
+
+/** Exponential backoff with full jitter, honouring the provider's Retry-After (capped). */
+export function retryDelay(attempt: number, retryAfterMs: number | null, baseMs = 1500, random = Math.random) {
+  if (retryAfterMs != null) return Math.min(MAX_RETRY_WAIT_MS, retryAfterMs);
+  const ceiling = Math.min(MAX_RETRY_WAIT_MS, baseMs * 2 ** (attempt - 1));
+  return Math.round(ceiling / 2 + (random() * ceiling) / 2);
+}
+
+function abortableSleep(ms: number, signal: AbortSignal) {
+  return new Promise<void>((resolve) => {
+    if (signal.aborted) return resolve();
+    const t = setTimeout(resolve, ms);
+    signal.addEventListener("abort", () => (clearTimeout(t), resolve()), { once: true });
+  });
+}
 
 export class CancelledError extends Error {}
 
@@ -564,6 +583,11 @@ export class Orchestrator {
       this.budget.begin();
       await sink.usage(this.budget);
       const callSignal = AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]);
+      const callStarted = performance.now();
+      const observe = (outcome: string) => {
+        metrics.providerCalls.inc({ provider: agent.provider, kind, outcome });
+        metrics.providerDuration.observe({ provider: agent.provider, kind }, (performance.now() - callStarted) / 1000);
+      };
       try {
         let done: { text: string; model: string; usage: { inputTokens: number; outputTokens: number } } | null = null;
         for await (const chunk of adapter.streamMessage(credentials, conversation, prompt, {
@@ -582,10 +606,14 @@ export class Orchestrator {
         }
         if (!done) throw new ProviderError(agent.provider, null, "Response ended without completing", true);
         this.budget.record(agent.provider, done.model, done.usage);
+        observe("ok");
+        metrics.providerTokens.inc({ provider: agent.provider, direction: "input" }, done.usage.inputTokens);
+        metrics.providerTokens.inc({ provider: agent.provider, direction: "output" }, done.usage.outputTokens);
         await sink.usage(this.budget);
         await sink.updateAgentRun(agentRunId, { status: "completed", output: done.text, model: done.model, usage: done.usage });
         return { text: done.text, model: done.model, agentRunId, replyToIds: opts.replyToIds ?? [] };
       } catch (err) {
+        observe(signal.aborted ? "cancelled" : err instanceof AuthExpiredError ? "auth_expired" : "error");
         if (signal.aborted) {
           await adapter.cancel(credentials, conversation).catch(() => {});
           await sink.updateAgentRun(agentRunId, { status: "cancelled" });
@@ -597,10 +625,17 @@ export class Orchestrator {
           return null;
         }
         const retryable = (err instanceof ProviderError && err.retryable) || (err as Error)?.name === "TimeoutError";
-        if (retryable && attempt < 2 && this.budget.canCall(reserve)) {
-          await sink.tool(agentRunId, agent, "retry", "started", (err as Error).message);
-          await new Promise((r) => setTimeout(r, this.input.retryDelayMs ?? 1500));
-          continue;
+        if (retryable && attempt < MAX_ATTEMPTS && this.budget.canCall(reserve)) {
+          const wait = retryDelay(attempt, err instanceof ProviderError ? err.retryAfterMs : null, this.input.retryDelayMs);
+          if (wait <= this.budget.remainingMs() || opts.ignoreRuntime) {
+            await sink.tool(agentRunId, agent, "retry", "started", `${(err as Error).message} — retrying in ${Math.round(wait / 1000)}s`);
+            await abortableSleep(wait, signal);
+            if (signal.aborted) {
+              await sink.updateAgentRun(agentRunId, { status: "cancelled" });
+              throw new CancelledError();
+            }
+            continue;
+          }
         }
         const message = err instanceof Error ? err.message : String(err);
         await sink.updateAgentRun(agentRunId, { status: "failed", error: message.slice(0, 500) });

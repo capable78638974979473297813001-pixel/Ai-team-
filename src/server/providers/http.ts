@@ -1,5 +1,5 @@
 import { redactString } from "../security/redact";
-import { AuthExpiredError, ProviderError } from "./types";
+import { AuthExpiredError, parseRetryAfter, ProviderError } from "./types";
 
 export type FetchLike = typeof fetch;
 
@@ -36,7 +36,8 @@ export async function toProviderError(provider: string, res: Response): Promise<
   }
   const msg = redactString(`${provider} returned ${res.status}${detail ? `: ${detail}` : ""}`).slice(0, 500);
   if (res.status === 401) return new AuthExpiredError(msg) as unknown as ProviderError;
-  return new ProviderError(provider, res.status, msg, res.status === 429 || res.status >= 500);
+  const retryable = res.status === 429 || res.status === 408 || res.status >= 500;
+  return new ProviderError(provider, res.status, msg, retryable, parseRetryAfter(res.headers.get("retry-after")));
 }
 
 export async function fetchJson<T>(

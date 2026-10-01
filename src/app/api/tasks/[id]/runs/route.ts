@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray } from "drizzle-orm";
 import { tasks } from "@/server/db/schema";
-import { api, ApiError, readJson } from "@/server/auth/guard";
+import { api, ApiError, readJsonRaw } from "@/server/auth/guard";
+import { idempotent } from "@/server/services/idempotency";
 import { db } from "@/server/db/client";
 import { taskRuns } from "@/server/db/schema";
 import { clampLimits } from "@/server/orchestrator/budget";
@@ -18,7 +19,9 @@ export const POST = api<true, { id: string }>({ auth: true, rate: RULES.task, ra
   const userId = session.user.id;
   const task = await getOwnedTask(userId, id);
   if (!task) throw new ApiError(404, "Conversation not found");
-  const body = runRequest.parse(await readJson(req, 128 * 1024));
+  const { json, raw } = await readJsonRaw(req, 128 * 1024);
+  const body = runRequest.parse(json);
+  return idempotent(req, userId, `POST /api/tasks/${id}/runs`, raw, async () => {
 
   if (body.contextTaskIds.length) {
     const owned = await db()
@@ -58,4 +61,5 @@ export const POST = api<true, { id: string }>({ auth: true, rate: RULES.task, ra
   });
   await audit("task.run", { userId, ...meta }, { type: "task", id });
   return { runId };
+  });
 });

@@ -1,4 +1,5 @@
-import { env } from "../env";
+import { createHash } from "node:crypto";
+import { appOrigin, env } from "../env";
 import { BaseAdapter, rankModels } from "./base";
 import { fetchJson, formBody, providerFetch, toProviderError } from "./http";
 import { verifyIdToken } from "./oidc";
@@ -29,6 +30,21 @@ export const OPENAI_AUTH = {
   /** Dynamic client used by open-source apps (see PROVIDERS.md). */
   dynamicClientId: "dynamic_agent_client",
 };
+
+/**
+ * Sign in with ChatGPT requires a persisted `ext_agent_host_id` for the
+ * environment the agent runs in. A hosted deployment is one host, so unless one
+ * is configured we derive a stable `urn:uuid:` (UUIDv4 layout) from APP_URL.
+ */
+export function agentHostId() {
+  const configured = env().OPENAI_SIWC_HOST_ID;
+  if (configured) return configured;
+  const h = createHash("sha256").update(`aiteam-host:${appOrigin()}`).digest("hex").split("");
+  h[12] = "4";
+  h[16] = ((parseInt(h[16]!, 16) & 0x3) | 0x8).toString(16);
+  const x = h.join("");
+  return `urn:uuid:${x.slice(0, 8)}-${x.slice(8, 12)}-${x.slice(12, 16)}-${x.slice(16, 20)}-${x.slice(20, 32)}`;
+}
 
 export class OpenAIProvider extends BaseAdapter {
   readonly info = {
@@ -81,7 +97,11 @@ export class OpenAIProvider extends BaseAdapter {
     );
   }
 
-  private async listModels(token: string): Promise<string[]> {
+  async listModels(creds: Credentials) {
+    return this.listModelIds(creds.accessToken);
+  }
+
+  private async listModelIds(token: string): Promise<string[]> {
     const body = await fetchJson<{ data: { id: string }[] }>("OpenAI", `${OPENAI_API}/models`, {
       headers: { authorization: `Bearer ${token}` },
       timeoutMs: 15_000,
@@ -91,7 +111,7 @@ export class OpenAIProvider extends BaseAdapter {
 
   async connect(input: ConnectInput): Promise<ConnectOutcome> {
     if (input.method === "api_key") {
-      const models = await this.listModels(input.apiKey);
+      const models = await this.listModelIds(input.apiKey);
       return {
         kind: "connected",
         credentials: { method: "api_key", accessToken: input.apiKey, scopes: [], extra: {} },
@@ -113,7 +133,7 @@ export class OpenAIProvider extends BaseAdapter {
         code_challenge_method: "S256",
         resource: OPENAI_API,
         agent_name_hint: "AI Team",
-        ...(e.OPENAI_SIWC_HOST_ID ? { ext_agent_host_id: e.OPENAI_SIWC_HOST_ID } : {}),
+        ext_agent_host_id: agentHostId(),
       }).toString();
       return { kind: "redirect", url: url.toString() };
     }
@@ -146,7 +166,7 @@ export class OpenAIProvider extends BaseAdapter {
     const authClaim = (claims["https://api.openai.com/auth"] ?? {}) as Record<string, unknown>;
     let models: string[] = [];
     try {
-      models = await this.listModels(tokens.access_token);
+      models = await this.listModelIds(tokens.access_token);
     } catch {
       /* model discovery is optional for plan tokens */
     }
@@ -227,7 +247,7 @@ export class OpenAIProvider extends BaseAdapter {
 
   async healthCheck(creds: Credentials): Promise<HealthResult> {
     try {
-      await this.listModels(creds.accessToken);
+      await this.listModelIds(creds.accessToken);
       return { ok: true };
     } catch (err) {
       if (err instanceof AuthExpiredError) return { ok: false, expired: true, detail: err.message };
