@@ -54,6 +54,10 @@ npm run db:migrate
 npm run dev            # http://localhost:3000
 ```
 
+For local development without any provider keys, `ENABLE_SANDBOX_AGENTS=true` (the default outside production) adds a **Sandbox (simulated)** connection method to every provider. Sandbox agents follow the full protocol with deterministic output, and their messages are marked `metadata.simulated = true`.
+
+Configuration is listed in [.env.example](./.env.example).
+
 Other commands:
 
 ```bash
@@ -67,7 +71,7 @@ npm run lint && npm run typecheck
 npm run build && npm start    # production (requires https APP_URL + secrets)
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint, typecheck, the test suite against a Postgres service, the production build, migrations, and the smoke and multi-instance checks against two live servers.
+CI (`.github/workflows/ci.yml`) runs lint, typecheck, the test suite against a Postgres service, the production build, migrations, the SIGTERM shutdown check, and the smoke and multi-instance checks against two live servers.
 
 ## Deploying
 
@@ -93,10 +97,6 @@ The image is a Next.js standalone build running as a non-root user, with a healt
 - Rate-limit buckets are shared through one atomic upsert per check.
 
 No sticky sessions are required. Behind a load balancer, set `TRUST_PROXY=true` so client IPs come from `X-Forwarded-For`.
-
-For local development without any provider keys, `ENABLE_SANDBOX_AGENTS=true` (the default outside production) adds a **Sandbox (simulated)** connection method to every provider. Sandbox agents follow the full protocol with deterministic output, and their messages are marked `metadata.simulated = true`.
-
-Configuration is listed in [.env.example](./.env.example).
 
 ## API
 
