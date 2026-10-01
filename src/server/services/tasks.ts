@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db/client";
 import { agentRuns, messages, providerEvents, taskRuns, tasks } from "../db/schema";
 import { reapOrphanedRuns, toAgentRunView, toMessageView, toRunView } from "../orchestrator/runner";
@@ -36,13 +36,14 @@ export async function listTasks(userId: string, limit = 100): Promise<TaskListIt
   return (await listTasksPage(userId, { limit })).tasks;
 }
 
+/** `u` is the exact (microsecond) updated_at as Postgres prints it, so comparisons stay index-friendly. */
 type Cursor = { u: string; id: string };
 const encodeCursor = (c: Cursor) => Buffer.from(JSON.stringify(c)).toString("base64url");
 function decodeCursor(s: string | null | undefined): Cursor | null {
   if (!s || s.length > 200) return null;
   try {
     const c = JSON.parse(Buffer.from(s, "base64url").toString("utf8")) as Cursor;
-    return typeof c.u === "string" && /^[0-9a-f-]{36}$/i.test(c.id) && !Number.isNaN(Date.parse(c.u)) ? c : null;
+    return typeof c.u === "string" && /^[0-9 :.+-]{19,40}$/.test(c.u) && /^[0-9a-f-]{36}$/i.test(c.id) ? c : null;
   } catch {
     return null;
   }
@@ -51,21 +52,20 @@ function decodeCursor(s: string | null | undefined): Cursor | null {
 /** Keyset pagination on (updated_at, id) so pages are stable while tasks keep updating. */
 export async function listTasksPage(userId: string, opts: { limit: number; cursor?: string | null }) {
   const cursor = decodeCursor(opts.cursor);
-  // Postgres keeps microseconds but the cursor (a JS Date) has milliseconds, so compare at ms precision.
-  const updatedMs = sql`date_trunc('milliseconds', ${tasks.updatedAt})`;
-  const after = cursor
-    ? or(sql`${updatedMs} < ${cursor.u}::timestamptz`, and(sql`${updatedMs} = ${cursor.u}::timestamptz`, lt(tasks.id, cursor.id)))
-    : undefined;
+  // The cursor carries Postgres's exact timestamp text (JS Dates would lose microseconds),
+  // so these comparisons are exact and the (user_id, updated_at) index serves the ORDER BY.
+  // Row-value comparison: Postgres uses it directly as an index condition on (user_id, updated_at, id).
+  const after = cursor ? sql`(${tasks.updatedAt}, ${tasks.id}) < (${cursor.u}::timestamptz, ${cursor.id}::uuid)` : undefined;
   const rows = await db()
-    .select()
+    .select({ task: tasks, exact: sql<string>`${tasks.updatedAt}::text` })
     .from(tasks)
     .where(and(eq(tasks.userId, userId), after))
-    .orderBy(desc(updatedMs), desc(tasks.id))
+    .orderBy(desc(tasks.updatedAt), desc(tasks.id))
     .limit(opts.limit + 1);
   const page = rows.slice(0, opts.limit);
   const last = page.at(-1);
-  const nextCursor = rows.length > opts.limit && last ? encodeCursor({ u: last.updatedAt.toISOString(), id: last.id }) : null;
-  return { tasks: await withProviders(page), nextCursor };
+  const nextCursor = rows.length > opts.limit && last ? encodeCursor({ u: last.exact, id: last.task.id }) : null;
+  return { tasks: await withProviders(page.map((r) => r.task)), nextCursor };
 }
 
 async function withProviders(rows: (typeof tasks.$inferSelect)[]): Promise<TaskListItem[]> {

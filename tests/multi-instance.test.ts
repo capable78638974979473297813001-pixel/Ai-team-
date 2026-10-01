@@ -137,3 +137,28 @@ describe("account management", () => {
   });
 });
 
+
+describe("maintenance", () => {
+  it("prunes expired sessions, old provider events and old audit entries, keeping recent ones", async () => {
+    const { maintenance } = await import("@/server/lifecycle");
+    const { auditEvents, providerEvents } = await import("@/server/db/schema");
+    const u = await makeUser(d);
+    const day = 86_400_000;
+    await d.insert(sessions).values([
+      { id: "e".repeat(64), userId: u.id, expiresAt: new Date(Date.now() - 1000) },
+      { id: "f".repeat(64), userId: u.id, expiresAt: new Date(Date.now() + day) },
+    ]);
+    await d.insert(providerEvents).values([
+      { userId: u.id, provider: "openai", type: "request", createdAt: new Date(Date.now() - 100 * day) },
+      { userId: u.id, provider: "openai", type: "request" },
+    ]);
+    await d.insert(auditEvents).values([
+      { userId: u.id, action: "auth.login", createdAt: new Date(Date.now() - 400 * day) },
+      { userId: u.id, action: "auth.login" },
+    ]);
+    await maintenance();
+    expect((await d.select().from(sessions)).map((s) => s.id)).toEqual(["f".repeat(64)]);
+    expect(await d.select().from(providerEvents)).toHaveLength(1);
+    expect(await d.select().from(auditEvents)).toHaveLength(1);
+  });
+});

@@ -84,6 +84,10 @@ An API key is a developer credential the user creates in the provider's own cons
 - **Session-only registration:** a webhook receives future task results, so registering one requires an interactive session. A leaked API token can't add an exfiltration endpoint.
 - `WEBHOOKS_ALLOW_PRIVATE=true` (for local development) is ignored in production.
 
+## Retention
+
+Maintenance runs on every instance every 10 minutes. It deletes expired sessions, OAuth states, idempotency keys (after 24 hours) and stale rate-limit buckets. It also deletes provider-call logs older than `PROVIDER_EVENTS_RETENTION_DAYS` (default 90) and audit entries older than `AUDIT_RETENTION_DAYS` (default 365, minimum 30).
+
 ## Data rights
 
 `GET /api/account/export` returns every record held about the user (profile, settings, connections metadata, teams, conversations, token and webhook metadata, audit log). It never includes credentials: provider tokens, token hashes, webhook secrets and the password hash are excluded. `DELETE /api/account` erases everything.

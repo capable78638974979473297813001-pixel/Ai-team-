@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { api } from "@/server/auth/guard";
 import { createApiToken, lookupApiToken, revokeApiToken } from "@/server/auth/tokens";
@@ -138,6 +138,26 @@ describe("pagination", () => {
     expect(seen).toHaveLength(7);
     expect(new Set(seen).size).toBe(7);
     expect((await listTasksPage(u.id, { limit: 3, cursor: "garbage" })).tasks).toHaveLength(3);
+  });
+
+  it("is exact with identical and microsecond-apart timestamps", async () => {
+    const u = await makeUser(d);
+    const ids: string[] = [];
+    for (let i = 0; i < 9; i++) ids.push((await createTask(u.id, `t${i}`, null)).id);
+    // Three share one instant; three differ only in microseconds; three are ordinary.
+    await d.execute(sql`update tasks set updated_at = '2026-01-01 00:00:00.000001+00' where id in (${sql.join(ids.slice(0, 3).map((i) => sql`${i}::uuid`), sql`, `)})`);
+    await d.execute(sql`update tasks set updated_at = '2026-01-01 00:00:00.000002+00' where id = ${ids[3]!}::uuid`);
+    await d.execute(sql`update tasks set updated_at = '2026-01-01 00:00:00.000003+00' where id = ${ids[4]!}::uuid`);
+    await d.execute(sql`update tasks set updated_at = '2026-01-01 00:00:00.000004+00' where id = ${ids[5]!}::uuid`);
+    const seen: string[] = [];
+    let cursor: string | null = null;
+    do {
+      const page: Awaited<ReturnType<typeof listTasksPage>> = await listTasksPage(u.id, { limit: 2, cursor });
+      seen.push(...page.tasks.map((t) => t.id));
+      cursor = page.nextCursor;
+    } while (cursor);
+    expect(seen).toHaveLength(9);
+    expect(new Set(seen)).toEqual(new Set(ids));
   });
 });
 

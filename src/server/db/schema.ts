@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   bigserial,
   doublePrecision,
@@ -156,7 +157,7 @@ export const tasks = pgTable(
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [index("tasks_user_idx").on(t.userId, t.updatedAt)],
+  (t) => [index("tasks_user_idx").on(t.userId, t.updatedAt, t.id)],
 );
 
 export type RunUsage = {
@@ -202,7 +203,13 @@ export const taskRuns = pgTable(
     startedAt: timestamp("started_at", { withTimezone: true }),
     finishedAt: timestamp("finished_at", { withTimezone: true }),
   },
-  (t) => [index("task_runs_task_idx").on(t.taskId)],
+  (t) => [
+    index("task_runs_task_idx").on(t.taskId),
+    // Active-run lookups (concurrency limit, heartbeat reaper) only ever touch a handful of rows.
+    index("task_runs_active_idx")
+      .on(t.status, t.heartbeatAt)
+      .where(sql`${t.status} in ('queued', 'running')`),
+  ],
 );
 
 export type RosterEntry = {
@@ -297,7 +304,7 @@ export const providerEvents = pgTable(
     data: jsonb("data").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: createdAt(),
   },
-  (t) => [index("provider_events_run_idx").on(t.taskRunId)],
+  (t) => [index("provider_events_run_idx").on(t.taskRunId), index("provider_events_created_idx").on(t.createdAt)],
 );
 
 export const auditEvents = pgTable(
@@ -313,7 +320,7 @@ export const auditEvents = pgTable(
     metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
     createdAt: createdAt(),
   },
-  (t) => [index("audit_events_user_idx").on(t.userId, t.createdAt)],
+  (t) => [index("audit_events_user_idx").on(t.userId, t.createdAt), index("audit_events_created_idx").on(t.createdAt)],
 );
 
 /** Token buckets for the Postgres-backed rate limiter (RATE_LIMIT_STORE=postgres). */

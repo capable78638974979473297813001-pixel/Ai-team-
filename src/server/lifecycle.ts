@@ -1,7 +1,7 @@
-import { lt } from "drizzle-orm";
+import { lt, sql } from "drizzle-orm";
 import { pruneExpiredSessions } from "./auth/session";
 import { db } from "./db/client";
-import { oauthStates } from "./db/schema";
+import { auditEvents, oauthStates, providerEvents } from "./db/schema";
 import { distributed, env } from "./env";
 import { INSTANCE_ID } from "./instance";
 import { startPgCoordination, stopPgCoordination } from "./orchestrator/pg-coordination";
@@ -19,6 +19,9 @@ export async function maintenance() {
   await db().delete(oauthStates).where(lt(oauthStates.expiresAt, new Date()));
   await pruneRateLimits();
   await pruneIdempotencyKeys();
+  const e = env();
+  await db().delete(providerEvents).where(lt(providerEvents.createdAt, sql`now() - make_interval(days => ${e.PROVIDER_EVENTS_RETENTION_DAYS})`));
+  await db().delete(auditEvents).where(lt(auditEvents.createdAt, sql`now() - make_interval(days => ${e.AUDIT_RETENTION_DAYS})`));
   const reaped = await reapOrphanedRuns();
   if (reaped) log.info(`marked ${reaped} orphaned run(s) as interrupted`);
 }

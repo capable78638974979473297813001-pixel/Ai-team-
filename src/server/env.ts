@@ -8,6 +8,9 @@ const schema = z.object({
   NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
   APP_URL: z.string().url().default("http://localhost:3000"),
   DATABASE_URL: z.string().optional(),
+  /** Retention for sanitised provider call logs and for audit events. */
+  PROVIDER_EVENTS_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(90),
+  AUDIT_RETENTION_DAYS: z.coerce.number().int().min(30).max(3650).default(365),
   /** Runs a single user may have queued or running at once. */
   MAX_CONCURRENT_RUNS: z.coerce.number().int().min(1).max(50).default(3),
   /** Development only: allow webhooks to private/loopback addresses. Ignored in production. */
