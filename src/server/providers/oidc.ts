@@ -4,9 +4,18 @@ import { fetchJson } from "./http";
 type Jwk = JsonWebKey & { kid?: string; alg?: string };
 const jwksCache = new Map<string, { keys: Jwk[]; at: number }>();
 
-async function getJwks(url: string): Promise<Jwk[]> {
+const REFETCH_MIN_MS = 60_000;
+/** Last forced (unknown-kid) refetch per JWKS URL, so key-ID spraying can't hammer the issuer. */
+const lastForced = new Map<string, number>();
+
+async function getJwks(url: string, force = false): Promise<Jwk[]> {
   const hit = jwksCache.get(url);
-  if (hit && Date.now() - hit.at < 3_600_000) return hit.keys;
+  if (force) {
+    if (hit && Date.now() - (lastForced.get(url) ?? 0) < REFETCH_MIN_MS) return hit.keys;
+    lastForced.set(url, Date.now());
+  } else if (hit && Date.now() - hit.at < 3_600_000) {
+    return hit.keys;
+  }
   const body = await fetchJson<{ keys: Jwk[] }>("oidc", url, { timeoutMs: 10_000 });
   jwksCache.set(url, { keys: body.keys, at: Date.now() });
   return body.keys;
@@ -44,8 +53,10 @@ export async function verifyIdToken(
   const header = b64json(h) as { alg: string; kid?: string };
   if (header.alg !== "RS256") throw new Error(`Unsupported ID token algorithm ${header.alg}`);
 
-  const keys = await getJwks(expected.jwksUri);
-  const jwk = keys.find((k) => k.kid === header.kid) ?? (keys.length === 1 ? keys[0] : undefined);
+  let keys = await getJwks(expected.jwksUri);
+  // Providers rotate signing keys; an unknown kid triggers one refetch (at most once a minute).
+  if (header.kid && !keys.some((k) => k.kid === header.kid)) keys = await getJwks(expected.jwksUri, true);
+  const jwk = keys.find((k) => k.kid === header.kid) ?? (!header.kid && keys.length === 1 ? keys[0] : undefined);
   if (!jwk) throw new Error("ID token signing key not found");
   const verifier = createVerify("RSA-SHA256");
   verifier.update(`${h}.${p}`);
@@ -66,4 +77,5 @@ export async function verifyIdToken(
 
 export function clearJwksCache() {
   jwksCache.clear();
+  lastForced.clear();
 }

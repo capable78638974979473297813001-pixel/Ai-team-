@@ -219,3 +219,30 @@ describe("refresh failure handling", () => {
     expect((await listConnections(user.id)).find((c) => c.provider === "google")!.state).not.toBe("expired");
   });
 });
+
+describe("ID token key rotation", () => {
+  it("refetches the JWKS once when a token is signed with a key it hasn't seen", async () => {
+    const { verifyIdToken } = await import("@/server/providers/oidc");
+    const rotated = oidcKeys();
+    const jwksUri = "https://issuer.example/jwks";
+    const claims = () => ({ iss: "https://issuer.example", aud: "client", sub: "s", nonce: "n", iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + 600 });
+    const expected = { issuer: "https://issuer.example", audience: "client", nonce: "n", jwksUri };
+    let served = keys.jwks;
+    let calls = 0;
+    setFetch(mockFetch({ "GET https://issuer.example/jwks": () => (calls++, jsonResponse(served)) }).impl);
+
+    // Old key: fetched once and cached.
+    await verifyIdToken(keys.sign(claims()), expected);
+    await verifyIdToken(keys.sign(claims()), expected);
+    expect(calls).toBe(1);
+
+    // Provider rotates to a new kid: the cached set lacks it, so one forced refetch happens.
+    served = { keys: rotated.jwks.keys.map((k) => ({ ...k, kid: "rotated-key" })) };
+    await expect(verifyIdToken(rotated.signWithKid("rotated-key", claims()), expected)).resolves.toMatchObject({ sub: "s" });
+    expect(calls).toBe(2);
+
+    // An attacker spraying unknown kids can't force more than one refetch a minute.
+    await expect(verifyIdToken(rotated.signWithKid("bogus-kid", claims()), expected)).rejects.toThrow(/key not found/);
+    expect(calls).toBe(2);
+  });
+});

@@ -57,11 +57,12 @@ export function mockFetch(routes: Record<string, Handler>) {
 export function oidcKeys() {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const jwk = { ...publicKey.export({ format: "jwk" }), kid: "test-key", alg: "RS256", use: "sig" };
-  const sign = (claims: Record<string, unknown>) => {
-    const h = Buffer.from(JSON.stringify({ alg: "RS256", kid: "test-key", typ: "JWT" })).toString("base64url");
+  const signWithKid = (kid: string, claims: Record<string, unknown>) => {
+    const h = Buffer.from(JSON.stringify({ alg: "RS256", kid, typ: "JWT" })).toString("base64url");
     const p = Buffer.from(JSON.stringify(claims)).toString("base64url");
     const s = createSign("RSA-SHA256").update(`${h}.${p}`).sign(privateKey).toString("base64url");
     return `${h}.${p}.${s}`;
   };
-  return { jwks: { keys: [jwk] }, sign };
+  const sign = (claims: Record<string, unknown>) => signWithKid("test-key", claims);
+  return { jwks: { keys: [jwk] }, sign, signWithKid };
 }

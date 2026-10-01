@@ -37,9 +37,11 @@ jobs:
       - run: npm run build
       - name: Migrate
         run: node scripts/migrate.mjs
+      - run: npm run setup
+      - name: Production server shuts down gracefully on SIGTERM
+        run: npm run check:shutdown
       - name: End-to-end (two coordinated instances, sandbox agents)
         run: |
-          npm run setup
           EVENT_BUS=postgres RATE_LIMIT_STORE=postgres APP_URL=http://localhost:3000 npx next dev -p 3000 > a.log 2>&1 &
           EVENT_BUS=postgres RATE_LIMIT_STORE=postgres APP_URL=http://localhost:3001 NEXT_DIST_DIR=.next-b npx next dev -p 3001 > b.log 2>&1 &
           for i in $(seq 1 60); do curl -sf localhost:3000/api/health && curl -sf localhost:3001/api/health && break; sleep 2; done

@@ -25,7 +25,12 @@ if (!healthy) {
 }
 console.log("✓ production server healthy");
 const headers = (await fetch(`http://localhost:${port}/api/providers`)).headers;
-console.log(headers.get("strict-transport-security") ? "✓ HSTS set in production" : "✗ HSTS missing");
+if (!headers.get("strict-transport-security")) {
+  console.error("✗ HSTS missing");
+  process.kill(-child.pid, "SIGKILL");
+  process.exit(1);
+}
+console.log("✓ HSTS set in production");
 
 const exited = new Promise((r) => child.on("exit", (code, signal) => r({ code, signal })));
 process.kill(-child.pid, "SIGTERM");
@@ -36,4 +41,8 @@ if (!result) {
   process.exit(1);
 }
 console.log(`✓ exited after SIGTERM (code ${result.code})`);
-console.log(/SIGTERM: stopping instance/.test(out) ? "✓ graceful shutdown handler ran" : "✗ shutdown handler did not run\n" + out);
+if (!/SIGTERM: stopping instance/.test(out)) {
+  console.error("✗ shutdown handler did not run\n" + out);
+  process.exit(1);
+}
+console.log("✓ graceful shutdown handler ran");

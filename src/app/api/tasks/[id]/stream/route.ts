@@ -9,6 +9,10 @@ import { getOwnedTask, getTaskView } from "@/server/services/tasks";
 export const dynamic = "force-dynamic";
 
 const GAP_WAIT_MS = 3_000;
+/** Open streams per user on this instance. */
+const MAX_STREAMS_PER_USER = 20;
+const g = globalThis as unknown as { __aiteamStreams?: Map<string, number> };
+const openStreams = (g.__aiteamStreams ??= new Map<string, number>());
 const GAP_POLL_MS = 150;
 
 /**
@@ -42,6 +46,11 @@ async function fetchGap(agentRunId: string, from: number, to: number): Promise<s
  */
 export const GET = api<true, { id: string }>({ auth: true }, async ({ req, session }, { id }) => {
   if (!(await getOwnedTask(session.user.id, id))) throw new ApiError(404, "Conversation not found");
+  const userId = session.user.id;
+  if ((openStreams.get(userId) ?? 0) >= MAX_STREAMS_PER_USER) {
+    throw new ApiError(429, "Too many open streams. Close some before opening more.", "too_many_streams");
+  }
+  openStreams.set(userId, (openStreams.get(userId) ?? 0) + 1);
 
   const encoder = new TextEncoder();
   let cleanup = () => {};
@@ -91,6 +100,9 @@ export const GET = api<true, { id: string }>({ auth: true }, async ({ req, sessi
       cleanup = () => {
         if (closed) return;
         closed = true;
+        const n = (openStreams.get(userId) ?? 1) - 1;
+        if (n > 0) openStreams.set(userId, n);
+        else openStreams.delete(userId);
         clearInterval(heartbeat);
         unsubscribe();
         try {
@@ -102,7 +114,12 @@ export const GET = api<true, { id: string }>({ auth: true }, async ({ req, sessi
       req.signal.addEventListener("abort", () => cleanup(), { once: true });
 
       write("retry: 3000\n\n");
-      const view = await getTaskView(session.user.id, id);
+      let view;
+      try {
+        view = await getTaskView(session.user.id, id);
+      } catch {
+        view = null;
+      }
       if (!view) return cleanup();
       for (const a of view.agentRuns) if (a.status === "running") known.set(a.id, a.partialOutput?.length ?? 0);
       send("snapshot", view);
