@@ -62,8 +62,9 @@ describe("webhooks", () => {
         res.end("ok");
       });
     });
-    await new Promise<void>((r) => server.listen(0, "127.0.0.1", r));
-    base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    // Listen dual-stack and use a hostname, so delivery exercises the pinned DNS lookup path.
+    await new Promise<void>((r) => server.listen(0, r));
+    base = `http://localhost:${(server.address() as AddressInfo).port}`;
   });
   afterAll(async () => {
     delete process.env.WEBHOOKS_ALLOW_PRIVATE;

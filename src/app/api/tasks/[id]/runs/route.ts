@@ -42,9 +42,12 @@ export const POST = api<true, { id: string }>({ auth: true, rate: RULES.task, ra
   const limits = clampLimits({ ...(await getUserLimits(userId)), ...(body.limits ?? {}) } as never);
   const teamId = body.teamId ?? task.teamId;
   const providers = (body.providers?.length ? body.providers : previous?.roster.map((r) => r.provider)) as ProviderId[] | undefined;
-  const roster = teamId
-    ? await buildRoster(userId, { teamId, task: body.prompt, maxAgents: limits.maxAgents, repoUrl: body.repoUrl })
-    : await buildRoster(userId, { providers, task: body.prompt, maxAgents: limits.maxAgents, repoUrl: body.repoUrl ?? previous?.options.repoUrl });
+  const roster = await (teamId
+    ? buildRoster(userId, { teamId, task: body.prompt, maxAgents: limits.maxAgents, repoUrl: body.repoUrl })
+    : buildRoster(userId, { providers, task: body.prompt, maxAgents: limits.maxAgents, repoUrl: body.repoUrl ?? previous?.options.repoUrl })
+  ).catch((err: Error) => {
+    throw new ApiError(400, err.message);
+  });
   if (!roster.length) throw new ApiError(400, "Connect at least one AI account first", "no_agents");
 
   const runId = await startRun({

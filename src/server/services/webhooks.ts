@@ -79,7 +79,9 @@ async function postOnce(rawUrl: string, body: string, headers: Record<string, st
         path: `${url.pathname}${url.search}`,
         method: "POST",
         // Connect to the address we validated, never a fresh DNS answer (rebinding protection).
-        lookup: (_host, _opts, cb) => cb(null, address, family),
+        // Node may ask for all addresses (Happy Eyeballs), so answer both call shapes.
+        lookup: ((_host: string, opts: { all?: boolean }, cb: (...args: unknown[]) => void) =>
+          opts?.all ? cb(null, [{ address, family }]) : cb(null, address, family)) as never,
         servername: url.hostname,
         headers: { ...headers, "content-length": Buffer.byteLength(body).toString() },
         timeout: webhookTiming.timeoutMs,

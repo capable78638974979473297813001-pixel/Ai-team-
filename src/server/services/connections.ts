@@ -159,9 +159,19 @@ export async function getActiveConnection(userId: string, provider: ProviderId):
         return next;
       });
     } catch (err) {
-      await markExpired(userId, provider, err instanceof Error ? err.message : "Refresh failed");
-      await audit("connection.refresh_failed", { userId }, { type: "provider", id: provider });
-      return null;
+      await audit("connection.refresh_failed", { userId }, { type: "provider", id: provider }, {
+        permanent: err instanceof AuthExpiredError,
+      });
+      await db()
+        .insert(providerEvents)
+        .values({ userId, provider, type: "refresh", data: { ok: false, permanent: err instanceof AuthExpiredError } });
+      if (err instanceof AuthExpiredError) {
+        // The provider rejected the grant (revoked, expired refresh token): the user must reconnect.
+        await markExpired(userId, provider, err.message);
+        return null;
+      }
+      // Transient failure (network, 5xx): keep the connection. Use the current token while it is still valid.
+      if (!credentials.expiresAt || credentials.expiresAt.getTime() <= Date.now()) return null;
     }
   }
   return {

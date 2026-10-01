@@ -90,7 +90,8 @@ type WorkItem = {
   result?: { messageId: string; agentRunId: string; text: string; summary: string; findings: Finding[]; details: string };
 };
 
-type ReviewRecord = { item: WorkItem; reviewer: EngineAgent; review: Review; messageId: string };
+/** `reviewedMessageId` pins the output version reviewed; a later revision supersedes the review. */
+type ReviewRecord = { item: WorkItem; reviewer: EngineAgent; review: Review; messageId: string; reviewedMessageId: string };
 
 const SYNTHESIS_RESERVE = 1;
 /** Attempts per provider call for transient failures (429, 5xx, timeouts). */
@@ -423,7 +424,7 @@ export class Orchestrator {
           metadata: { reviewOf: item.agent.key, reviewOfName: item.agent.name, title: item.title, review, round: this.round },
           replyToIds: [r.messageId],
         });
-        out.push({ item, reviewer, review, messageId: msg.id });
+        out.push({ item, reviewer, review, messageId: msg.id, reviewedMessageId: r.messageId });
       }),
     );
     return out;
@@ -473,6 +474,8 @@ export class Orchestrator {
     rulings: { claim: string; ruling: string; resolution: string }[],
   ) {
     const done = items.filter((i) => i.result);
+    // Reviews of outputs that were later revised are superseded; the judge's rulings carry that history.
+    reviews = reviews.filter((r) => r.reviewedMessageId === r.item.result?.messageId);
     const prompt = synthesisPrompt({
       task: this.input.task,
       context: this.input.context,

@@ -199,3 +199,23 @@ describe("refresh concurrency", () => {
     expect(refreshes).toHaveLength(1);
   });
 });
+
+describe("refresh failure handling", () => {
+  it("keeps the connection when a refresh fails transiently", async () => {
+    const user = await makeUser(d);
+    const g = googleMocks();
+    const { state, nonce } = await start(user.id);
+    g.setNonce(nonce);
+    await completeOAuth({ userId: user.id, sessionId: "sess-1", provider: "google", params: new URLSearchParams({ state, code: "c" }) });
+
+    googleMocks({ refreshStatus: 503 });
+    // Still valid for 30s: the current token is used.
+    await d.update(providerConnections).set({ tokenExpiresAt: new Date(Date.now() + 30_000) });
+    const conn = await getActiveConnection(user.id, "google");
+    expect(conn!.credentials.accessToken).toBe("ya29.access-token-value");
+    // Already expired: skipped for now, but not marked expired.
+    await d.update(providerConnections).set({ tokenExpiresAt: new Date(Date.now() - 1_000) });
+    expect(await getActiveConnection(user.id, "google")).toBeNull();
+    expect((await listConnections(user.id)).find((c) => c.provider === "google")!.state).not.toBe("expired");
+  });
+});
