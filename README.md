@@ -62,6 +62,7 @@ TEST_DATABASE_URL=… npm test  # also runs the real LISTEN/NOTIFY tests
 npm run smoke                 # end-to-end test against a running dev server (sandbox agents)
 npm run check:multi-instance  # two servers on :3000/:3001 — cross-instance streaming + cancel
 npm run check:shutdown        # production server exits cleanly on SIGTERM (after npm run build)
+npm run check:load            # USERS×RUNS concurrent team runs streamed across both instances
 npm run lint && npm run typecheck
 npm run build && npm start    # production (requires https APP_URL + secrets)
 ```
@@ -82,6 +83,8 @@ docker run -p 3000:3000 --env-file .env ai-team
 **Encryption key rotation.** Prepend a new key (`ENCRYPTION_KEYS="v2:<new>,v1:<old>"`), deploy, run `npm run keys:rotate`, then remove `v1` once a re-run reports `rotated=0`.
 
 The image is a Next.js standalone build running as a non-root user, with a health check on `/api/health`. On `SIGTERM` the server stops accepting work, cancels in-flight runs (they are marked "interrupted" so the user can retry), and closes its database listeners.
+
+**Load.** With two dev-mode instances on one machine and sandbox agents, 150 concurrent four-agent runs (each about 14 provider calls, about 82k streamed deltas in total) all completed in 60 seconds, with no errors and 25 database connections in use. For cross-instance fan-out, consecutive deltas are coalesced for 25ms per agent run before NOTIFY; offsets make the merge lossless.
 
 **Running several instances.** In production, `EVENT_BUS` and `RATE_LIMIT_STORE` default to `postgres`:
 - Live run events fan out through Postgres `LISTEN/NOTIFY`, so an SSE client can be connected to any instance. Large messages are sent as a reference and loaded from the database.

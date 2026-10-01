@@ -21,6 +21,9 @@ import { toMessageView } from "./views";
 const EVENTS = "aiteam_events";
 const CANCEL = "aiteam_cancel";
 const MAX_PAYLOAD = 7_500;
+const COALESCE_MS = 25;
+/** JSON escaping can double text size; keep merged deltas well under the NOTIFY limit. */
+const MAX_COALESCED_CHARS = 2_500;
 
 type Envelope = { o: string; t: string; e?: RunEvent; ref?: { messageId: string } };
 
@@ -40,17 +43,49 @@ export async function startPgCoordination(onCancel: (runId: string) => void) {
     if (/^[0-9a-f-]{36}$/i.test(runId)) onCancel(runId);
   });
 
+  // Deltas are tiny and frequent. Coalesce consecutive ones per agent run for a
+  // few ms before NOTIFY; offsets make the merged event exactly equivalent.
+  const pendingDeltas = new Map<string, Extract<RunEvent, { type: "delta" }>>();
+  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  const flushDeltas = () => {
+    flushTimer = null;
+    const batch = [...pendingDeltas.values()];
+    pendingDeltas.clear();
+    for (const d of batch) sendNow(d);
+  };
+
+  const sendNow = (e: RunEvent) => {
+    let payload = JSON.stringify({ o: INSTANCE_ID, t: e.taskId, e } satisfies Envelope);
+    if (payload.length > MAX_PAYLOAD) {
+      if (e.type !== "message") {
+        // Receivers' gap filling recovers dropped delta text from the database.
+        log.warn(`dropping oversized ${e.type} event from cross-instance fan-out`);
+        return;
+      }
+      payload = JSON.stringify({ o: INSTANCE_ID, t: e.taskId, ref: { messageId: e.message.id } } satisfies Envelope);
+    }
+    sql.notify(EVENTS, payload).catch((err) => log.error("notify failed", err));
+  };
+
   bus.setTransport({
     send(e) {
-      let payload = JSON.stringify({ o: INSTANCE_ID, t: e.taskId, e } satisfies Envelope);
-      if (payload.length > MAX_PAYLOAD) {
-        if (e.type !== "message") {
-          log.warn(`dropping oversized ${e.type} event from cross-instance fan-out`);
-          return;
+      if (e.type === "delta") {
+        const prev = pendingDeltas.get(e.agentRunId);
+        if (prev && prev.offset + prev.text.length === e.offset && prev.text.length + e.text.length < MAX_COALESCED_CHARS) {
+          prev.text += e.text;
+        } else {
+          if (prev) sendNow(prev);
+          pendingDeltas.set(e.agentRunId, { ...e });
         }
-        payload = JSON.stringify({ o: INSTANCE_ID, t: e.taskId, ref: { messageId: e.message.id } } satisfies Envelope);
+        flushTimer ??= setTimeout(flushDeltas, COALESCE_MS);
+        return;
       }
-      sql.notify(EVENTS, payload).catch((err) => log.error("notify failed", err));
+      // Anything else must not overtake buffered text from the same run.
+      if (pendingDeltas.size) {
+        if (flushTimer) clearTimeout(flushTimer);
+        flushDeltas();
+      }
+      sendNow(e);
     },
   });
   log.info(`cross-instance coordination enabled (instance ${INSTANCE_ID})`);
